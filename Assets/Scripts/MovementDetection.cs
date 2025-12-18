@@ -11,6 +11,8 @@ public class MovementDetector : MonoBehaviour
     private Vector3 lastPosition;
     private Quaternion lastRotation;
 
+    public ObservationCollector collector; 
+
     void Start()
     {
         lastPosition = transform.position;
@@ -24,6 +26,8 @@ public class MovementDetector : MonoBehaviour
 
         if (positionChange > positionThreshold || rotationChange > rotationThreshold)
         {
+            collector.CollectAndSend();
+
             if (raycastScript != null)
             {
                 raycastScript.PerformDetection();

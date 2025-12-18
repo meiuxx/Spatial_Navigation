@@ -1,5 +1,6 @@
 using UnityEngine;
 using System.Collections.Generic;
+using System.Linq;
 
 public class RGBRaycast : MonoBehaviour
 {
@@ -10,80 +11,33 @@ public class RGBRaycast : MonoBehaviour
     public LayerMask raycastMask = -1;
     public int rayCount = 9;
 
-    [Header("Update Settings")]
-    public UpdateMode updateMode = UpdateMode.OnMovement;
-    public float positionThreshold = 0.1f;
-    public float rotationThreshold = 5f;
-    public float timeInterval = 0.5f;
+    [Header("Debug")]
+    public bool debugMode = true;
 
-    [Header("Display")]
-    public bool logToConsole = true;
-    public bool showVisualization = true;
-
-    private Vector3 lastPosition;
-    private Quaternion lastRotation;
-    private float nextUpdateTime = 0f;
-    private List<string> lastDetection = new List<string>();
-
-    public enum UpdateMode
+    [System.Serializable]
+    public class RayObservation
     {
-        OnMovement,
-        TimedInterval,
-        ManualOnly,
-        EveryFrame // For debugging
+        public string objectName;
+        public float distance;
     }
+
+    private List<RayObservation> lastDetection = new List<RayObservation>();
 
     void Start()
     {
-        lastPosition = transform.position;
-        lastRotation = transform.rotation;
-
-        // Initial detection
-        PerformDetection();
-    }
-
-    void Update()
-    {
-        switch (updateMode)
+        if (rgbCamera == null)
         {
-            case UpdateMode.OnMovement:
-                CheckMovementAndUpdate();
-                break;
-
-            case UpdateMode.TimedInterval:
-                if (Time.time >= nextUpdateTime)
-                {
-                    PerformDetection();
-                    nextUpdateTime = Time.time + timeInterval;
-                }
-                break;
-
-            case UpdateMode.EveryFrame:
-                PerformDetection();
-                break;
-
-            case UpdateMode.ManualOnly:
-                // Only update via button or method call
-                break;
+            rgbCamera = GetComponent<Camera>();
+            if (rgbCamera == null)
+            {
+                rgbCamera = Camera.main;
+            }
         }
 
-        // Manual trigger with Space key
-        if (Input.GetKeyDown(KeyCode.Space))
+        if (debugMode)
         {
-            PerformDetection();
-        }
-    }
-
-    void CheckMovementAndUpdate()
-    {
-        float positionChange = Vector3.Distance(transform.position, lastPosition);
-        float rotationChange = Quaternion.Angle(transform.rotation, lastRotation);
-
-        if (positionChange > positionThreshold || rotationChange > rotationThreshold)
-        {
-            PerformDetection();
-            lastPosition = transform.position;
-            lastRotation = transform.rotation;
+            Debug.Log($"RGBRaycast initialized with camera: {rgbCamera?.gameObject.name}");
+            Debug.Log($"Raycast mask value: {raycastMask.value}");
         }
     }
 
@@ -91,21 +45,41 @@ public class RGBRaycast : MonoBehaviour
     {
         if (rgbCamera == null)
         {
-            Debug.LogWarning("RGB Camera not assigned!");
+            Debug.LogError("RGB Camera not assigned!");
             return;
+        }
+
+        // Debug info
+        if (debugMode)
+        {
+            Debug.Log($"=== Performing Raycast Detection ===");
+            Debug.Log($"Camera: {rgbCamera.name}");
+            Debug.Log($"Position: {rgbCamera.transform.position}");
+            Debug.Log($"Forward: {rgbCamera.transform.forward}");
+            Debug.Log($"Max distance: {maxDistance}");
+            Debug.Log($"Ray count: {rayCount}");
         }
 
         // Clear previous detection
         lastDetection.Clear();
 
         // Perform multi-ray detection
-        Dictionary<Collider, float> detectedObjects = new Dictionary<Collider, float>();
+        Dictionary<Collider, RayObservation> detectedObjects = new Dictionary<Collider, RayObservation>();
 
         if (rayCount == 1)
         {
             // Single center ray
             Ray ray = rgbCamera.ViewportPointToRay(new Vector3(0.5f, 0.5f, 0));
+            if (debugMode)
+            {
+                Debug.Log($"Center ray: origin={ray.origin}, direction={ray.direction}");
+                Debug.DrawRay(ray.origin, ray.direction * maxDistance, Color.red, 2f);
+            }
+
             RaycastHit[] hits = Physics.RaycastAll(ray, maxDistance, raycastMask);
+
+            if (debugMode) Debug.Log($"Center ray hits: {hits.Length}");
+
             AddHitsToDictionary(hits, detectedObjects);
         }
         else
@@ -126,123 +100,101 @@ public class RGBRaycast : MonoBehaviour
                     RaycastHit[] hits = Physics.RaycastAll(ray, maxDistance, raycastMask);
                     AddHitsToDictionary(hits, detectedObjects);
 
-                    if (showVisualization && Time.frameCount % 10 == 0)
+                    if (debugMode)
                     {
                         Debug.DrawRay(ray.origin, ray.direction * maxDistance,
-                                     Color.magenta, 0.5f);
+                                     new Color(u, v, 0.5f, 0.5f), 2f);
                     }
                 }
             }
         }
 
-        // Process and display results
-        ProcessDetectedObjects(detectedObjects);
+        // Convert to list
+        lastDetection = detectedObjects.Values.ToList();
+
+        // Sort by distance
+        lastDetection.Sort((a, b) => a.distance.CompareTo(b.distance));
+
+        // Debug output
+        if (debugMode)
+        {
+            if (lastDetection.Count == 0)
+            {
+                Debug.LogWarning("No objects detected by raycast!");
+
+                // Debug: Draw all colliders in scene
+                Collider[] allColliders = FindObjectsOfType<Collider>();
+                Debug.Log($"Total colliders in scene: {allColliders.Length}");
+                foreach (Collider col in allColliders)
+                {
+                    Debug.Log($"  - {col.gameObject.name} at {col.transform.position}");
+                }
+            }
+            else
+            {
+                Debug.Log($"Detected {lastDetection.Count} objects:");
+                foreach (var obs in lastDetection)
+                {
+                    Debug.Log($"  • {obs.objectName} @ {obs.distance:F2}m");
+                }
+            }
+        }
     }
 
-    void AddHitsToDictionary(RaycastHit[] hits, Dictionary<Collider, float> dictionary)
+    void AddHitsToDictionary(RaycastHit[] hits, Dictionary<Collider, RayObservation> dictionary)
     {
         foreach (RaycastHit hit in hits)
         {
             if (!dictionary.ContainsKey(hit.collider) ||
-                hit.distance < dictionary[hit.collider])
+                hit.distance < dictionary[hit.collider].distance)
             {
-                dictionary[hit.collider] = hit.distance;
+                dictionary[hit.collider] = new RayObservation
+                {
+                    objectName = hit.collider.gameObject.name,
+                    distance = hit.distance
+                };
+
+                if (debugMode)
+                {
+                    Debug.Log($"Hit: {hit.collider.name} at {hit.distance:F2}m, point: {hit.point}");
+                    Debug.DrawLine(rgbCamera.transform.position, hit.point, Color.green, 2f);
+                }
             }
         }
     }
 
-    void ProcessDetectedObjects(Dictionary<Collider, float> detectedObjects)
+    public List<RayObservation> GetRayObservations()
     {
-        if (detectedObjects.Count == 0)
-        {
-            if (logToConsole)
-                Debug.Log("No objects detected");
-            return;
-        }
-
-        // Clear console
-        ClearConsole();
-
-        // Log new detection
-        if (logToConsole)
-        {
-            Debug.Log($"=== Detection ({Time.time:F1}s) ===");
-            Debug.Log($"Objects: {detectedObjects.Count}");
-        }
-
-        int index = 1;
-        foreach (var kvp in detectedObjects)
-        {
-            Collider col = kvp.Key;
-            float distance = kvp.Value;
-            string objectInfo = $"{index}. {col.name} ({distance:F1}m)";
-
-            lastDetection.Add(objectInfo);
-
-            if (logToConsole)
-                Debug.Log(objectInfo);
-
-            index++;
-        }
+        return new List<RayObservation>(lastDetection);
     }
 
-    // Public method for UI buttons
-    public void ManualDetection()
+    public int GetDetectionCount()
     {
-        PerformDetection();
+        return lastDetection.Count;
     }
 
-    // Get results
-    public List<string> GetDetectionResults()
+    void OnDrawGizmosSelected()
     {
-        return new List<string>(lastDetection);
-    }
-
-    // Clear Unity console
-    void ClearConsole()
-    {
-#if UNITY_EDITOR
-        var logEntries = System.Type.GetType("UnityEditor.LogEntries, UnityEditor");
-        var clearMethod = logEntries?.GetMethod("Clear", 
-            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
-        clearMethod?.Invoke(null, null);
-#endif
-    }
-
-    void OnDrawGizmos()
-    {
-        if (showVisualization && rgbCamera != null)
+        if (rgbCamera != null)
         {
-            // Draw camera forward direction
-            Gizmos.color = Color.cyan;
-            Gizmos.DrawRay(rgbCamera.transform.position,
-                          rgbCamera.transform.forward * 2f);
-
-            // Draw FOV visualization
             Gizmos.color = Color.yellow;
-            float fov = rgbCamera.fieldOfView;
-            float aspect = rgbCamera.aspect;
+            Gizmos.DrawWireSphere(rgbCamera.transform.position, 0.1f);
+
+            // Draw camera frustum
             float distance = 5f;
+            float halfHeight = distance * Mathf.Tan(rgbCamera.fieldOfView * 0.5f * Mathf.Deg2Rad);
+            float halfWidth = halfHeight * rgbCamera.aspect;
 
-            Vector3[] corners = GetFrustumCorners(distance);
-            for (int i = 0; i < 4; i++)
-            {
-                Gizmos.DrawLine(rgbCamera.transform.position, corners[i]);
-            }
+            Vector3 center = rgbCamera.transform.position + rgbCamera.transform.forward * distance;
+            Vector3 topLeft = center + (-rgbCamera.transform.right * halfWidth) + (rgbCamera.transform.up * halfHeight);
+            Vector3 topRight = center + (rgbCamera.transform.right * halfWidth) + (rgbCamera.transform.up * halfHeight);
+            Vector3 bottomLeft = center + (-rgbCamera.transform.right * halfWidth) + (-rgbCamera.transform.up * halfHeight);
+            Vector3 bottomRight = center + (rgbCamera.transform.right * halfWidth) + (-rgbCamera.transform.up * halfHeight);
+
+            Gizmos.DrawLine(rgbCamera.transform.position, topLeft);
+            Gizmos.DrawLine(rgbCamera.transform.position, topRight);
+            Gizmos.DrawLine(rgbCamera.transform.position, bottomLeft);
+            Gizmos.DrawLine(rgbCamera.transform.position, bottomRight);
         }
-    }
-
-    Vector3[] GetFrustumCorners(float distance)
-    {
-        Vector3[] corners = new Vector3[4];
-        float halfHeight = distance * Mathf.Tan(rgbCamera.fieldOfView * 0.5f * Mathf.Deg2Rad);
-        float halfWidth = halfHeight * rgbCamera.aspect;
-
-        corners[0] = rgbCamera.transform.TransformPoint(new Vector3(-halfWidth, -halfHeight, distance));
-        corners[1] = rgbCamera.transform.TransformPoint(new Vector3(halfWidth, -halfHeight, distance));
-        corners[2] = rgbCamera.transform.TransformPoint(new Vector3(halfWidth, halfHeight, distance));
-        corners[3] = rgbCamera.transform.TransformPoint(new Vector3(-halfWidth, halfHeight, distance));
-
-        return corners;
     }
 }
