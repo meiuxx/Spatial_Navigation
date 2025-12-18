@@ -423,6 +423,8 @@ GameObject:
   m_Component:
   - component: {fileID: 120773753}
   - component: {fileID: 120773757}
+  - component: {fileID: 120773759}
+  - component: {fileID: 120773758}
   - component: {fileID: 120773752}
   - component: {fileID: 120773756}
   m_Layer: 6
@@ -512,6 +514,45 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::AgentController
   moveSpeed: 2
   turnSpeed: 90
+--- !u!114 &120773758
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 120773750}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ff232be91ddf15149a295e2bb1681453, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::RayCast
+  rgbCamera: {fileID: 2003998403}
+  maxDistance: 100
+  raycastMask:
+    serializedVersion: 2
+    m_Bits: 4294967295
+  rayCount: 25
+  updateMode: 0
+  positionThreshold: 0.1
+  rotationThreshold: 5
+  timeInterval: 0.5
+  logToConsole: 1
+  showVisualization: 1
+--- !u!114 &120773759
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 120773750}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8040d5c17a2afeb4daacb087e53f4889, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::MovementDetector
+  raycastScript: {fileID: 120773758}
+  positionThreshold: 0.05
+  rotationThreshold: 1
 --- !u!4 &129770935 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: 463726, guid: e8844f0074e08e146ac42fb5eaeab3db, type: 3}
