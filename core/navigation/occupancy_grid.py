@@ -77,22 +77,16 @@ class SLAMProcess:
         if not self.mapbytes:
             return None
             
-        map_np = np.frombuffer(self.mapbytes, dtype=np.uint8)
+        map_np = np.frombuffer(self.mapbytes, dtype=np.uint8) # take it from buffer instead of from variable
         map_np = map_np.reshape((self.map_size_pixels, self.map_size_pixels))
-        map_color = cv2.cvtColor(map_np, cv2.COLOR_GRAY2BGR)
-        
+        map_color = cv2.cvtColor(map_np, cv2.COLOR_GRAY2BGR) # convert to bgr for functions like circle and line
+                
         scale = self.map_size_pixels / self.map_size_meters
-        robot_x = int(self.agent_pose[0] / 1000.0 * scale + self.map_size_pixels / 2)
-        robot_y = int(self.agent_pose[1] / 1000.0 * scale + self.map_size_pixels / 2)
+
+        robot_x = int(self.agent_pose[0] / 1000.0 * scale) # DONT CENTER SHIFT THEM
+        robot_y = int(self.agent_pose[1] / 1000.0 * scale)
         
-        cv2.circle(map_color, (robot_x, robot_y), 5, (0, 0, 255), -1)
-        
-        orientation_length = 20
-        angle_rad = np.radians(self.agent_pose[2])
-        end_x = int(robot_x + orientation_length * np.cos(angle_rad))
-        end_y = int(robot_y - orientation_length * np.sin(angle_rad))
-        
-        cv2.line(map_color, (robot_x, robot_y), (end_x, end_y), (0, 255, 0), 2)
+        cv2.circle(map_color, (robot_x, robot_y), 20, (0, 0, 255), -1) # patched!!
         
         return map_color
 
@@ -103,141 +97,16 @@ class SLAMProcess:
             cv2.imwrite(f'{filename}.png', map_image)
             print(f"Map saved to {filename}.png")
             
+            # heed advice to save raw map
             with open(f'{filename}.pgm', 'wb') as f:
                 f.write(b'P5\n')
                 f.write(f'{self.map_size_pixels} {self.map_size_pixels}\n'.encode())
                 f.write(b'255\n')
                 f.write(self.mapbytes)
             print(f"Raw map saved to {filename}.pgm")
-    
 
-def run_slam(host='127.0.0.1', port=5001):
-    """Socket server with real-time map visualization"""
-    
-    # Create server socket
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    
-    server_socket.bind((host, port))
-    server_socket.listen(1)
-    
-    # Initialize SLAM processor
-    slam_processor = SLAMProcess(map_size_pixels=5000, map_size_meters=100)
-    
-    conn = None
-    try:
-        # Accept connection
-        conn, addr = server_socket.accept()
-        conn.settimeout(2.0)
-        print(f"Connected to Unity at {addr}")
-        
-        buffer = ""
-        last_visualization_time = time.time()
-        visualization_interval = 0.5  # Update display every 0.5 seconds
-        
-        # Create OpenCV window
-        cv2.namedWindow('SLAM Map', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('SLAM Map', 600, 600)
-        
-        print("\n" + "="*60)
-        print("SLAM ACTIVE - Move your robot in Unity to build a map!")
-        print("="*60 + "\n")
-        
-        while True:
-            try:
-                # Check for OpenCV window close
-                if cv2.getWindowProperty('SLAM Map', cv2.WND_PROP_VISIBLE) < 1:
-                    print("Map window closed by user")
-                    break
-                
-                # Receive data
-                data = conn.recv(4096)
-                if not data:
-                    print("Unity disconnected.")
-                    break
-                
-                # Decode and add to buffer
-                buffer += data.decode('utf-8', errors='ignore')
-                
-                # Process complete messages
-                messages = []
-                while '\n' in buffer:
-                    message, buffer = buffer.split('\n', 1)
-                    if message.strip():
-                        messages.append(message.strip())
-                
-                # Process all received messages
-                for message in messages:
-                    try:
-                        # Parse and process the LiDAR scan
-                        scan_mm = slam_processor.parse_message(message)
-                        
-                        if scan_mm:
-                            # Update SLAM
-                            pose = slam_processor.update(scan_mm)
-                            
-                            if pose:
-                                # Print pose occasionally
-                                if slam_processor.scan_count % 20 == 0:
-                                    print(f"Scan #{slam_processor.scan_count}: "
-                                          f"Pos({pose[0]/1000:.2f}m, {pose[1]/1000:.2f}m), "
-                                          f"Heading: {pose[2]:.1f}°")
-                    
-                    except json.JSONDecodeError:
-                        print(f"⚠️ Invalid JSON received")
-                    except Exception as e:
-                        print(f"⚠️ Processing error: {e}")
-                
-                # Update visualization at regular intervals
-                current_time = time.time()
-                if current_time - last_visualization_time >= visualization_interval:
-                    map_image = slam_processor.get_map_image()
-                    if map_image is not None:
-                        # Add text overlay
-                        cv2.putText(map_image, f"Scans: {slam_processor.scan_count}", 
-                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                        cv2.putText(map_image, "Black=Obstacle, White=Free, Gray=Unknown", 
-                                   (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                        
-                        # Show the map
-                        cv2.imshow('SLAM Map', map_image)
-                        cv2.waitKey(1)  # Brief wait to update display
-                    
-                    last_visualization_time = current_time
-                
-            except socket.timeout:
-                # Timeout is ok, just check for window and continue
-                continue
-            except ConnectionResetError:
-                print("Unity connection was reset.")
-                break
-            except Exception as e:
-                print(f"Error in main loop: {e}")
-                break
-                
-    except KeyboardInterrupt:
-        print("\n👋 Shutting down by user request...")
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-    finally:
-        # Cleanup
-        if conn:
-            conn.close()
-        server_socket.close()
-        
-        # Save final map
-        try:
-            slam_processor.save_map('final_slam_map')
-            print("💾 Final map saved!")
-        except Exception as e:
-            print(f"Could not save map: {e}")
-        
-        # Close OpenCV window
-        cv2.destroyAllWindows()
-        print("Server shut down.")
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("Unity ↔ Python LiDAR SLAM Bridge with Visualization")
-    print("=" * 60)
-    run_slam()
+    def get_map_array(self):
+        # for frontier detection
+        map_np = np.frombuffer(self.mapbytes, dtype = np.uint8).copy()
+        map_np = map_np.reshape(self.map_size_pixels, self.map_size_pixels)
+        return map_np
