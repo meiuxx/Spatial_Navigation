@@ -17,11 +17,8 @@ def run_slam(host='127.0.0.1', port=5001):
     server_socket.listen(1)
     print(f"listening on {host}:{port}")
 
-    current_goal = None
-    goal_tolerance = 1.0   # metres
-
     # Initialize SLAM processor
-    slam_processor = og.SLAMProcess(map_size_pixels=1000, map_size_meters=100)
+    slam_processor = og.SLAMProcess(map_size_pixels=5000, map_size_meters=100)
 
     conn = None
     try:
@@ -97,53 +94,6 @@ def run_slam(host='127.0.0.1', port=5001):
                     if map_image is not None:
                         cv2.imshow('SLAM Map', map_image)
                         cv2.waitKey(1)
-
-                    # 2. Check if we actually NEED a new frontier
-                    should_plan = False
-                    if current_goal is None:
-                        should_plan = True
-                    else:
-                        # Use meters (floats), do not cast to int yet
-                        curr_x = slam_processor.agent_pose[0] / 1000.0
-                        curr_y = slam_processor.agent_pose[1] / 1000.0
-                        dist_to_goal = np.hypot(curr_x - current_goal[0], curr_y - current_goal[1])
-                        
-                        if dist_to_goal < goal_tolerance:
-                            print(f"Goal reached! Distance: {dist_to_goal:.2f}m. Finding next frontier...")
-                            should_plan = True
-
-                    # 3. Only run the heavy BFS if should_plan is True
-                    if should_plan:
-                        map_array = slam_processor.get_map_array()
-                        quantized = navigation.utils.quantize_map(map_array)
-
-                        # Convert pose to pixel for BFS start point
-                        scale = slam_processor.map_size_pixels / slam_processor.map_size_meters
-                        px = int(slam_processor.agent_pose[0] / 1000.0 * scale)
-                        py = int(slam_processor.agent_pose[1] / 1000.0 * scale)
-                        
-                        # Run the expensive detection
-                        explorer = navigation.frontier_detection.FrontierDetector(quantized)
-                        start = (py, px)
-
-                        frontiers = explorer.explorer(start)
-                        print("Frontier regions:", len(frontiers))
-                        print("Cells in first frontier:", len(frontiers[0]) if frontiers else 0)
-                        if frontiers:
-                            # Use float poses for distance calculations in select_frontier
-                            centroid = navigation.frontier_detection.select_frontier(
-                                frontiers, 
-                                slam_processor.agent_pose[0] / 1000.0, 
-                                slam_processor.agent_pose[1] / 1000.0,
-                                slam_processor.map_size_pixels, 
-                                slam_processor.map_size_meters
-                            )
-                            if centroid:
-                                cmd_sender.send_goal(centroid[0], centroid[1])
-                                current_goal = centroid
-                        else:
-                            print("No more frontiers found. Exploration complete.")
-                            current_goal = None  # no frontiers left
 
             except socket.timeout:
                 # Timeout is ok, just check for window and continue
