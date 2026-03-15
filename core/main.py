@@ -4,8 +4,6 @@ import cv2
 import time
 import json
 import numpy as np
-import navigation.frontier_detection
-import navigation.utils
 import navigation.commander
 
 
@@ -126,6 +124,6 @@ def run_slam(host='127.0.0.1', port=5001):
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("Unity ↔ Python LiDAR SLAM Bridge with Visualization")
+    print("unity lidar slam idk")
     print("=" * 60)
     run_slam()
