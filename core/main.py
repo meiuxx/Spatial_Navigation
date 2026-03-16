@@ -16,7 +16,7 @@ def run_slam(host='127.0.0.1', port=5001):
     print(f"listening on {host}:{port}")
 
     # Initialize SLAM processor
-    slam_processor = og.SLAMProcess(map_size_pixels=5000, map_size_meters=100)
+    slam_processor = og.SLAMProcess(map_size_pixels=4000, map_size_meters=100)
 
     conn = None
     try:

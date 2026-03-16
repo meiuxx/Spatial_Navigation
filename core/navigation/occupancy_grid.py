@@ -39,6 +39,7 @@ class SLAMProcess:
                 data['odom']['dy'] * 1000.0,   # Unity right (X)   -> SLAM Y
                 data['odom']['dtheta']          # heading change (degrees)
             )
+            
         else:
             self.latest_odom = (0.0, 0.0, 0.0)
 
@@ -110,3 +111,14 @@ class SLAMProcess:
         map_np = np.frombuffer(self.mapbytes, dtype = np.uint8).copy()
         map_np = map_np.reshape(self.map_size_pixels, self.map_size_pixels)
         return map_np
+    
+    def world_to_map(self, unity_x, unity_z):
+
+        pixels_per_meter = self.map_size_pixels / self.map_size_meters
+
+        origin = self.map_size_pixels // 2
+
+        map_x = int(origin + unity_x * pixels_per_meter)
+        map_y = int(origin + unity_z * pixels_per_meter)
+
+        return map_x, map_y

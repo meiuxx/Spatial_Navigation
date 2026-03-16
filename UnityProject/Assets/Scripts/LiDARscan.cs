@@ -7,6 +7,9 @@ using System.Threading.Tasks; // Added for async operation
 
 public class RosLidarSimulator : MonoBehaviour
 {
+    [Header("Layer Configuration")]
+    public LayerMask obstacleLayers = -1; // -1 means "Everything"
+
     [Header("LIDAR Sensor Parameters")]
     [Tooltip("Number of rays per complete 360° scan")]
     public int raysPerScan = 360;
@@ -206,7 +209,7 @@ public class RosLidarSimulator : MonoBehaviour
 
             // Perform raycast
             RaycastHit hit;
-            bool hasHit = Physics.Raycast(transform.position, direction, out hit, maxRange);
+            bool hasHit = Physics.Raycast(transform.position, direction, out hit, maxRange, obstacleLayers);
 
             if (hasHit && hit.distance >= minRange)
             {
