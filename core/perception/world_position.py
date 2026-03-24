@@ -163,38 +163,6 @@ class SemanticMapper:
         self._rebuild_kdtree()
         return landmark_id
 
-    def get_graph_image(self, image_path, x_min, x_max, y_min, y_max, figsize=(12, 10)):
-        """
-        Render the graph overlaid on the hospital map and return as an RGB numpy array.
-        """
-        img = mpimg.imread(image_path)
-        fig, ax = plt.subplots(figsize=figsize, dpi=100)
-        ax.imshow(img, extent=[x_min, x_max, y_min, y_max], origin='upper')
-        # Draw nodes
-        for nid, data in self.graph.nodes(data=True):
-            x, y, _ = data['position']
-            ax.plot(x, y, 'ro', markersize=8)
-            ax.text(x, y, nid, fontsize=8, ha='center', va='bottom',
-                    bbox=dict(facecolor='white', alpha=0.6, pad=1))
-        # Draw edges
-        for u, v in self.graph.edges():
-            x1, y1, _ = self.graph.nodes[u]['position']
-            x2, y2, _ = self.graph.nodes[v]['position']
-            ax.plot([x1, x2], [y1, y2], 'b-', alpha=0.6, linewidth=1.5)
-        ax.set_xlabel("X (m)")
-        ax.set_ylabel("Y (m)")
-        ax.set_title("Semantic Graph")
-        ax.axis('equal')
-        ax.grid(True, linestyle='--', alpha=0.3)
-
-        # Convert figure to numpy array
-        fig.canvas.draw()
-        buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
-        buf = buf.reshape(fig.canvas.get_width_height()[::-1] + (4,))  # RGBA
-        buf = buf[:, :, :3]  # Keep only RGB channels
-        plt.close(fig)  # free memory
-        return buf
-
 
 # ----------------------------------------------------------------------
 # Global model instances (loaded once)
@@ -299,7 +267,7 @@ def get_object_3d_position(rgb_image, saliency_map, depth_map, depth_w, depth_h,
     X = (cx - cx_img) * Z / fx
     Y = (cy - cy_img) * Z / fy
 
-    return (X, Y, Z), (x, y, w, h)
+    return (X, Y, Z), (x, y, w, h), distance
 
 def compute_angle_to_object(bbox, image_width, fov_degrees):
     """Return horizontal angle (radians) from camera forward to object center."""
@@ -376,7 +344,7 @@ def process_message(json_str, update_vis=False, vis_params=None):
         return
 
     # 3D position and bounding box
-    pos_cam, bbox = get_object_3d_position(rgb_np, sal_map, depth_linear, depth_w, depth_h, fov)
+    pos_cam, bbox, distance = get_object_3d_position(rgb_np, sal_map, depth_linear, depth_w, depth_h, fov)
 
     # CLIP on the cropped object
     clip_label = None
@@ -435,11 +403,8 @@ def process_message(json_str, update_vis=False, vis_params=None):
             timestamp=timestamp,
             saliency_mean=sal_mean,
             clip_label=clip_label,
+            distance=distance,
             clip_score=clip_score
         )
-        # Optionally return graph image if requested
-        if update_vis and vis_params is not None:
-            img = semantic_mapper.get_graph_image(**vis_params)
-            return img
     else:
         print("No salient object detected or invalid depth")

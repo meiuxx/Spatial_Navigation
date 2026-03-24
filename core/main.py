@@ -2,13 +2,6 @@ import socket
 import perception.world_position as perception
 import cv2
 
-vis_params = {
-    "image_path": "C:\\Users\\ALIENWARE\\Unity\\Spatial_Navigation_proj\\core\\perception\\Screenshot 2026-03-24 170806.png",   # adjust path
-    "x_min": 11.5, "x_max": 89.62,
-    "y_min": -27.88, "y_max": 13.39
-}
-
-
 def handle_client(conn, addr):
     print(f"Client connected from {addr}")
     buffer = ""
@@ -23,7 +16,7 @@ def handle_client(conn, addr):
                 line, buffer = buffer.split('\n', 1)
                 if line.strip():
                     # Inside the message processing loop:
-                    graph_img = perception.process_message(line, update_vis=True, vis_params=vis_params)
+                    graph_img = perception.process_message(line)
                     if graph_img is not None:
                         cv2.imshow("Semantic Graph", graph_img)
                         cv2.waitKey(1)
