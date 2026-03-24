@@ -1,6 +1,8 @@
 import socket
-import perception.world_position as perception
-import cv2
+import perception.process as perception
+from perception.graph_sender import GraphSender
+
+sender = GraphSender(host='127.0.0.1', port=5006)
 
 def handle_client(conn, addr):
     print(f"Client connected from {addr}")
@@ -16,10 +18,8 @@ def handle_client(conn, addr):
                 line, buffer = buffer.split('\n', 1)
                 if line.strip():
                     # Inside the message processing loop:
-                    graph_img = perception.process_message(line)
-                    if graph_img is not None:
-                        cv2.imshow("Semantic Graph", graph_img)
-                        cv2.waitKey(1)
+                    perception.process_message(line.strip())
+                    sender.send_graph(perception.semantic_mapper.graph)
     
     except Exception as e:
         print(f"Connection error: {e}")
