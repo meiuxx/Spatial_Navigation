@@ -1,4 +1,4 @@
-# Semantic Spatial Navigation v.2
+# Semantic Spatial Navigation
 
 ## Introduction:
 
