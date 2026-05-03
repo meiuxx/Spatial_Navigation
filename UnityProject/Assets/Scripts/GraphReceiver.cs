@@ -29,8 +29,8 @@ public class GraphVisualizer : MonoBehaviour
 
     void Start()
     {
-        // Start listening in a background thread
         listenerThread = new Thread(ListenForGraph);
+        listenerThread.IsBackground = true;
         listenerThread.Start();
     }
 
