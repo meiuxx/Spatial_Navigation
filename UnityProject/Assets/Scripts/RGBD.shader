@@ -1,54 +1,70 @@
-Shader "Hidden/LinearDepth"
+Shader "Hidden/LinearDepth_HDRP"
 {
     SubShader
     {
+        Tags { "RenderPipeline" = "HDRenderPipeline" }
         Cull Off ZWrite Off ZTest Always
 
         Pass
         {
-            CGPROGRAM
-            #pragma vertex vert
-            #pragma fragment frag
-            #pragma target 3.0
+            Name "LinearDepth"
 
-            #include "UnityCG.cginc"
+            HLSLPROGRAM
+            #pragma vertex Vert
+            #pragma fragment Frag
+            #pragma target 4.5
 
-            struct appdata
+            #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+            #include "Packages/com.unity.render-pipelines.high-definition/Runtime/ShaderLibrary/ShaderVariables.hlsl"
+
+            // Full-screen triangle vertex input
+            struct Attributes
             {
-                float4 vertex : POSITION;
-                float2 uv : TEXCOORD0;
+                uint vertexID : SV_VertexID;
+                UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
-            struct v2f
+            struct Varyings
             {
-                float2 uv : TEXCOORD0;
-                float4 vertex : SV_POSITION;
+                float4 positionCS : SV_POSITION;
+                float2 texcoord   : TEXCOORD0;
+                UNITY_VERTEX_OUTPUT_STEREO
             };
 
-            v2f vert (appdata v)
+            Varyings Vert(Attributes input)
             {
-                v2f o;
-                o.vertex = UnityObjectToClipPos(v.vertex);
-                o.uv = v.uv;
-                return o;
+                Varyings output;
+                UNITY_SETUP_INSTANCE_ID(input);
+                UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(output);
+
+                // HDRP provides a full-screen triangle helper
+                output.positionCS = GetFullScreenTriangleVertexPosition(input.vertexID);
+                output.texcoord   = GetFullScreenTriangleTexCoord(input.vertexID);
+
+                return output;
             }
 
-            sampler2D _CameraDepthTexture;
-
-            float4 frag (v2f i) : SV_Target
+            float4 Frag(Varyings input) : SV_Target
             {
-                float2 uv = i.uv;
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
 
-                #if UNITY_UV_STARTS_AT_TOP
-                    uv.y = 1.0 - uv.y;
-                #endif
+                float2 uv = input.texcoord;
 
-                float depth = SAMPLE_DEPTH_TEXTURE(_CameraDepthTexture, uv);
-                float linearDepth = LinearEyeDepth(depth);
+                // HDRP renders with Y flipped relative to screen UV convention.
+                // Flipping here corrects the upside-down result.
+                uv.y = 1.0 - uv.y;
 
-                return float4(linearDepth, 0, 0, 1);
+                // Sample raw (device/NDC) depth from the HDRP camera depth buffer.
+                float rawDepth = SampleCameraDepth(uv);
+
+                // Convert raw device depth to linear eye depth.
+                // LinearEyeDepth(_ZBufferParams) already accounts for UNITY_REVERSED_Z
+                // internally — do NOT manually flip rawDepth before passing it in.
+                float linearDepth = LinearEyeDepth(rawDepth, _ZBufferParams);
+
+                return float4(linearDepth, 0.0, 0.0, 1.0);
             }
-            ENDCG
+            ENDHLSL
         }
     }
 }

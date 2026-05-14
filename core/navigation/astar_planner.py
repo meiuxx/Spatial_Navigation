@@ -3,13 +3,6 @@
 # Grid-based A* path planner that operates directly on the OccupancyMap grid.
 # Returns a list of (world_x, world_z) waypoints from the agent's current
 # position to a goal, then sends them one-by-one as move_to commands to Unity.
-#
-# Usage
-# -----
-#   planner = AStarPlanner(occupancy_map, unity_host='127.0.0.1', unity_port=5002)
-#   planner.navigate_to(agent_pos, goal_wx, goal_wz)   # blocking per-waypoint
-#
-# Or call plan() to get just the waypoint list without sending.
 
 import heapq
 import socket
@@ -27,19 +20,12 @@ class AStarPlanner:
     Parameters
     ----------
     occ_map : OccupancyMap
-        Shared occupancy map instance.
     unity_host : str
     unity_port : int
-        TCP address of the Unity CommandReceiver.
     inflation_radius : float
-        Metres to inflate obstacles before planning. Keeps the path away
-        from walls. Should be >= robot radius.
     waypoint_spacing : int
-        After finding the raw cell path, keep only every Nth cell as a
-        waypoint (reduces the number of move_to commands).
     send_timeout : float
-        Seconds to wait for each move_to to be acknowledged / completed
-        before sending the next one.  Set to 0 for fire-and-forget.
+        Seconds to wait between waypoints (0 = fire-and-forget).
     """
 
     def __init__(
@@ -47,9 +33,9 @@ class AStarPlanner:
         occ_map           : OccupancyMap,
         unity_host        : str   = '127.0.0.1',
         unity_port        : int   = 5002,
-        inflation_radius  : float = 0.4,   # metres
-        waypoint_spacing  : int   = 10,    # cells between waypoints
-        send_timeout      : float = 0.0,   # seconds (0 = fire-and-forget)
+        inflation_radius  : float = 0.4,
+        waypoint_spacing  : int   = 10,
+        send_timeout      : float = 0.0,
     ):
         self.map              = occ_map
         self.unity_host       = unity_host
@@ -58,16 +44,45 @@ class AStarPlanner:
         self.waypoint_spacing = waypoint_spacing
         self.send_timeout     = send_timeout
 
+        # FIX (Bug 2): Persistent socket reused across all waypoints in a
+        # navigate_to call.  CommandReceiver.cs accepts one client at a time
+        # in a blocking loop — opening a fresh connection per waypoint races
+        # against the server's AcceptTcpClient cycle and causes dropped commands.
+        self._sock   = None
+        self._sock_lock = __import__('threading').Lock()
+
+    # ── Persistent connection helpers ─────────────────────────────────────────
+
+    def _ensure_connected(self):
+        """Open the persistent socket if it isn't already open."""
+        if self._sock is not None:
+            return True
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(2.0)
+            s.connect((self.unity_host, self.unity_port))
+            s.settimeout(5.0)
+            self._sock = s
+            print(f"[A*] Connected to Unity on {self.unity_host}:{self.unity_port}")
+            return True
+        except Exception as e:
+            print(f"[A*] Could not connect to Unity: {e}")
+            self._sock = None
+            return False
+
+    def _close_connection(self):
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except Exception:
+                pass
+            self._sock = None
+
     # ── Obstacle inflation ────────────────────────────────────────────────────
 
     def _inflated_obstacle_mask(self):
-        """
-        Dilate the OCCUPIED layer by inflation_radius to create a clearance
-        buffer. Planning treats inflated cells as impassable.
-        """
         occ  = (self.map.grid == OCCUPIED).astype(np.uint8)
         r    = max(1, int(math.ceil(self.inflation_radius / self.map.resolution)))
-        from navigation.occupancy_map import OccupancyMap
         import cv2
         k    = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*r+1, 2*r+1))
         return cv2.dilate(occ, k, iterations=1).astype(bool)
@@ -77,10 +92,7 @@ class AStarPlanner:
     def plan(self, agent_pos, goal_wx, goal_wz):
         """
         Compute an A* path from agent_pos to (goal_wx, goal_wz).
-
-        Returns
-        -------
-        list of (world_x, world_z)  or  [] if no path found.
+        Returns list of (world_x, world_z) or [] if no path found.
         """
         start_cell = self.map.world_to_cell(agent_pos[0], agent_pos[2])
         goal_cell  = self.map.world_to_cell(goal_wx, goal_wz)
@@ -91,8 +103,6 @@ class AStarPlanner:
 
         blocked = self._inflated_obstacle_mask()
 
-        # If goal is inside inflated obstacle space, pull it to the nearest
-        # free, non-inflated cell before planning.
         gc, gr = goal_cell
         if blocked[gr, gc]:
             pulled = self._nearest_nonblocked(goal_cell, blocked)
@@ -102,7 +112,6 @@ class AStarPlanner:
             print(f"[A*] Goal pulled from {goal_cell} to {pulled}")
             goal_cell = pulled
 
-        # Also nudge start if it somehow landed in blocked space.
         sc, sr = start_cell
         if blocked[sr, sc]:
             pulled = self._nearest_nonblocked(start_cell, blocked)
@@ -114,14 +123,13 @@ class AStarPlanner:
         sc, sr = start_cell
         gc, gr = goal_cell
 
-        # 8-connected neighbours
         neighbours = [(-1,-1),(0,-1),(1,-1),
                       (-1, 0),       (1, 0),
                       (-1, 1),(0, 1),(1, 1)]
         diag_cost  = math.sqrt(2)
 
-        g_score  = {start_cell: 0.0}
-        f_score  = {start_cell: self._heuristic(sc, sr, gc, gr)}
+        g_score   = {start_cell: 0.0}
+        f_score   = {start_cell: self._heuristic(sc, sr, gc, gr)}
         came_from = {}
         open_heap = [(f_score[start_cell], start_cell)]
 
@@ -137,12 +145,11 @@ class AStarPlanner:
                     continue
                 if blocked[nr, nc]:
                     continue
-                # Treat UNKNOWN as passable but penalised (encourages known space)
-                cell_cost = 1.0 if self.map.grid[nr, nc] == FREE else 3.0
-                step_cost = (diag_cost if dc != 0 and dr != 0 else 1.0) * cell_cost
+                cell_cost  = 1.0 if self.map.grid[nr, nc] == FREE else 3.0
+                step_cost  = (diag_cost if dc != 0 and dr != 0 else 1.0) * cell_cost
 
-                neighbour  = (nc, nr)
-                tentative_g = g_score[current] + step_cost
+                neighbour    = (nc, nr)
+                tentative_g  = g_score[current] + step_cost
                 if tentative_g < g_score.get(neighbour, float('inf')):
                     came_from[neighbour] = current
                     g_score[neighbour]   = tentative_g
@@ -153,13 +160,11 @@ class AStarPlanner:
         return []
 
     def _heuristic(self, c0, r0, c1, r1):
-        """Octile distance heuristic (admissible for 8-connected grid)."""
         dx = abs(c0 - c1)
         dy = abs(r0 - r1)
         return max(dx, dy) + (math.sqrt(2) - 1) * min(dx, dy)
 
     def _reconstruct(self, came_from, current):
-        """Trace back the path and convert to world coords, downsampled."""
         cells = []
         while current in came_from:
             cells.append(current)
@@ -167,16 +172,14 @@ class AStarPlanner:
         cells.append(current)
         cells.reverse()
 
-        # Downsample: keep every Nth cell + always keep the last
-        step  = max(1, self.waypoint_spacing)
-        kept  = cells[::step]
+        step = max(1, self.waypoint_spacing)
+        kept = cells[::step]
         if cells[-1] not in kept:
             kept.append(cells[-1])
 
         return [self.map.cell_to_world(c, r) for c, r in kept]
 
     def _nearest_nonblocked(self, cell, blocked, max_search=30):
-        """BFS to the nearest cell that is not in the inflated obstacle mask."""
         from collections import deque
         visited = {cell}
         q = deque([cell])
@@ -194,7 +197,6 @@ class AStarPlanner:
         return None
 
     def _nearest_free(self, cell, max_search=20):
-        """BFS to find the closest FREE cell to `cell`."""
         from collections import deque
         visited = {cell}
         q = deque([cell])
@@ -216,23 +218,30 @@ class AStarPlanner:
 
     def send_move_to(self, wx, wz, theta=0.0):
         """
-        Send a single move_to command to Unity CommandReceiver.
-        x/y in the MoveCommand map to Unity Z/X respectively
-        (matches the coord flip in command.cs: targetPosition = new Vector3(py, ..., px)).
+        Send a single move_to command over the persistent socket.
+
+        FIX (Bug 2): Instead of opening a new TCP connection per waypoint
+        (which races with CommandReceiver.cs's single-threaded AcceptTcpClient
+        loop and drops commands), we reuse one connection for the full path.
+        If the socket is broken we reconnect once and retry.
         """
-        cmd = json.dumps({"command": "move_to", "x": wz, "y": wx, "theta": theta})
-        try:
-            with socket.create_connection((self.unity_host, self.unity_port), timeout=2.0) as s:
-                s.sendall((cmd + '\n').encode('utf-8'))
-        except Exception as e:
-            print(f"[A*] send_move_to failed: {e}")
+        cmd = json.dumps({"command": "move_to", "x": wz, "y": wx, "theta": theta}) + '\n'
+        with self._sock_lock:
+            for attempt in range(2):
+                if not self._ensure_connected():
+                    return
+                try:
+                    self._sock.sendall(cmd.encode('utf-8'))
+                    return   # success
+                except Exception as e:
+                    print(f"[A*] send_move_to failed (attempt {attempt+1}): {e}")
+                    self._close_connection()
+                    # retry once after reconnect
 
     def navigate_to(self, agent_pos, goal_wx, goal_wz, theta=0.0):
         """
-        Plan a path to (goal_wx, goal_wz) and send each waypoint to Unity.
-
-        If send_timeout > 0, waits that many seconds between waypoints so
-        the agent has time to reach each one before the next is issued.
+        Plan a path to (goal_wx, goal_wz) and send each waypoint to Unity
+        over a single persistent connection.
         """
         waypoints = self.plan(agent_pos, goal_wx, goal_wz)
         if not waypoints:
@@ -243,9 +252,8 @@ class AStarPlanner:
               f"via {len(waypoints)} waypoints")
 
         for i, (wx, wz) in enumerate(waypoints):
-            # Heading: point towards next waypoint (or use supplied theta at end)
             if i + 1 < len(waypoints):
-                nx, nz = waypoints[i + 1]
+                nx, nz  = waypoints[i + 1]
                 heading = math.degrees(math.atan2(nx - wx, nz - wz))
             else:
                 heading = theta

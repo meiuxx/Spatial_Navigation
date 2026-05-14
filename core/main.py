@@ -8,38 +8,30 @@ from perception.graph_sender import GraphSender
 from navigation.astar_planner import AStarPlanner
 
 # ── Shared state ──────────────────────────────────────────────────────────────
-# The latest known agent position, written by the sensor thread,
-# read by the exploration thread.
 _agent_pos      = None
 _agent_pos_lock = threading.Lock()
 
 # ── Config ────────────────────────────────────────────────────────────────────
 SENSOR_HOST     = '127.0.0.1'
-SENSOR_PORT     = 5004          # Unity → Python  (SensorSender.cs)
+SENSOR_PORT     = 5004
 GRAPH_HOST      = '127.0.0.1'
-GRAPH_PORT      = 5006          # Python → graph viewer
+GRAPH_PORT      = 5006
 UNITY_CMD_HOST  = '127.0.0.1'
-UNITY_CMD_PORT  = 5008          # Python → Unity  (CommandReceiver.cs)
+UNITY_CMD_PORT  = 5008
 
-# How long to wait (seconds) at each waypoint before sending the next one.
-# Tune to match your agent's movement speed.
 WAYPOINT_DWELL  = 1.5
 
-# How close (metres) the agent must be to a frontier centroid before we
-# consider it "visited" and skip re-navigating to it.
 FRONTIER_VISIT_RADIUS = 1.5
 
-# Minimum number of frontier clusters required before we attempt navigation.
 MIN_FRONTIERS   = 1
 
-# Seconds to wait between exploration ticks when no frontier is reachable.
 IDLE_RETRY_SECS = 2.0
 
 # ── Graph sender ──────────────────────────────────────────────────────────────
 sender = GraphSender(host=GRAPH_HOST, port=GRAPH_PORT)
 
 
-# ── Sensor thread (unchanged logic, now also updates _agent_pos) ──────────────
+# ── Sensor thread ─────────────────────────────────────────────────────────────
 
 def handle_client(conn, addr):
     global _agent_pos
@@ -61,8 +53,6 @@ def handle_client(conn, addr):
                 perception.process_message(line)
                 sender.send_graph(perception.semantic_mapper.graph)
 
-                # Keep latest agent position for the exploration thread.
-                # process_message already parsed cam_pos; re-parse cheaply.
                 try:
                     import json
                     msg = json.loads(line)
@@ -70,7 +60,6 @@ def handle_client(conn, addr):
                     with _agent_pos_lock:
                         _agent_pos = pos
 
-                    # Clear stale frontiers right around the agent every frame.
                     perception.occupancy_map.clear_near_agent(pos, radius_m=1.2)
                 except Exception:
                     pass
@@ -104,7 +93,6 @@ def _pick_frontier(frontiers, agent_pos, visited):
     best      = None
     ax, az    = agent_pos[0], agent_pos[2]
     for (fx, fz) in frontiers:
-        # Skip if we've already been close to this one
         if any(np.hypot(fx - vx, fz - vz) < FRONTIER_VISIT_RADIUS
                for vx, vz in visited):
             continue
@@ -115,6 +103,30 @@ def _pick_frontier(frontiers, agent_pos, visited):
     return best
 
 
+def _prune_visited(visited, frontiers):
+    """
+    FIX (Bug 3): Remove visited entries that no longer have any current frontier
+    centroid within FRONTIER_VISIT_RADIUS.  This prevents the visited list from
+    permanently blacklisting map regions that are later re-discovered as new
+    frontiers at a slightly different position.
+
+    Without this, as frontiers shift slightly with map updates, all of them
+    eventually fall within FRONTIER_VISIT_RADIUS of an old visited point and
+    the agent stops navigating entirely.
+    """
+    if not frontiers:
+        return visited  # keep all if no frontiers yet; don't wipe history
+
+    pruned = []
+    for vx, vz in visited:
+        # Keep this visited entry only if at least one current frontier is
+        # still close to it — i.e. it's still "covering" a real frontier.
+        if any(np.hypot(fx - vx, fz - vz) < FRONTIER_VISIT_RADIUS
+               for fx, fz in frontiers):
+            pruned.append((vx, vz))
+    return pruned
+
+
 def exploration_loop():
     """
     Continuously:
@@ -122,7 +134,9 @@ def exploration_loop():
       2. Pick the nearest unvisited one.
       3. Plan an A* path and send waypoints to Unity.
       4. Mark it visited once the agent is close enough.
-      5. Repeat until no frontiers remain.
+      5. Prune the visited list against current frontiers so stale entries
+         don't permanently block navigation.
+      6. Repeat until no frontiers remain.
     """
     planner = AStarPlanner(
         occ_map          = perception.occupancy_map,
@@ -133,11 +147,10 @@ def exploration_loop():
         send_timeout     = WAYPOINT_DWELL,
     )
 
-    visited = []   # list of (wx, wz) centroids we've already navigated to
+    visited = []
 
     print("[Explorer] Exploration loop started — waiting for sensor data …")
 
-    # Wait until we have a first agent position.
     while True:
         with _agent_pos_lock:
             pos = _agent_pos
@@ -148,7 +161,6 @@ def exploration_loop():
     print("[Explorer] Agent position acquired. Starting exploration.")
 
     while True:
-        # ── Snapshot agent position ──────────────────────────────────────────
         with _agent_pos_lock:
             agent_pos = _agent_pos
 
@@ -156,17 +168,19 @@ def exploration_loop():
             time.sleep(IDLE_RETRY_SECS)
             continue
 
-        # ── Get current frontier clusters ────────────────────────────────────
         frontiers = perception.occupancy_map.get_frontiers()
         print(f"[Explorer] {len(frontiers)} frontier clusters, "
               f"{len(visited)} visited")
+
+        # FIX (Bug 3): prune stale visited entries each cycle so old blacklist
+        # entries don't permanently suppress re-discovered frontiers.
+        visited = _prune_visited(visited, frontiers)
 
         if len(frontiers) < MIN_FRONTIERS:
             print("[Explorer] No frontiers — map may be fully explored. Idling …")
             time.sleep(IDLE_RETRY_SECS)
             continue
 
-        # ── Pick target ──────────────────────────────────────────────────────
         target = _pick_frontier(frontiers, agent_pos, visited)
         if target is None:
             print("[Explorer] All current frontiers already visited. "
@@ -177,11 +191,9 @@ def exploration_loop():
         tx, tz = target
         print(f"[Explorer] Navigating to frontier ({tx:.1f}, {tz:.1f})")
 
-        # ── Navigate ─────────────────────────────────────────────────────────
         success = planner.navigate_to(agent_pos, tx, tz)
 
         if success:
-            # Wait for the agent to physically arrive before marking visited.
             arrived = _wait_for_arrival(agent_pos=lambda: _get_agent_pos(),
                                         goal=(tx, tz),
                                         timeout=60.0)
@@ -193,13 +205,9 @@ def exploration_loop():
                 print(f"[Explorer] Abandoned ({tx:.1f}, {tz:.1f}). "
                       f"Total visited: {len(visited)}")
         else:
-            # Path planning failed — blacklist this frontier so we don't
-            # spin on it forever.
             visited.append((tx, tz))
             print(f"[Explorer] Could not path to ({tx:.1f}, {tz:.1f}), skipping.")
 
-        # Small pause before next cycle so the map can be updated with new
-        # sensor frames collected while moving.
         time.sleep(0.5)
 
 
@@ -212,38 +220,81 @@ def _wait_for_arrival(agent_pos, goal, timeout=60.0, poll=0.25):
     """
     Block until the agent is within FRONTIER_VISIT_RADIUS of goal.
 
-    Abandons early if:
-      - timeout expires, or
-      - the distance to goal has been INCREASING for DIVERGE_WINDOW
-        consecutive samples (agent is moving away / stuck on wrong side).
+    FIX (Bug 1): The original divergence check fired after just 8 consecutive
+    rising distance samples (2 seconds).  Unity's CommandReceiver rotates the
+    agent before translating, which *always* increases distance briefly at the
+    start of each waypoint — causing a false-positive bail-out on nearly every
+    frontier.
+
+    The fix uses two separate guards instead of a single strict-monotone check:
+
+    1. STALL guard  — if the agent hasn't closed distance by more than
+       STALL_IMPROVEMENT metres over the last STALL_WINDOW seconds, it's
+       probably stuck.  This correctly ignores the brief rotational phase.
+
+    2. DIVERGE guard — if the agent is moving *away* AND is already very close
+       to the goal, something structural is wrong (e.g. nav-mesh pushed it past
+       the goal).  Only fires once close enough that we know the agent reached
+       the vicinity.
 
     Returns True if arrived, False if abandoned.
     """
-    DIVERGE_WINDOW = 8   # consecutive rising samples before we bail
+    STALL_WINDOW       = 8.0   # seconds: window to measure progress
+    STALL_IMPROVEMENT  = 0.3   # metres: minimum progress required over window
+    DIVERGE_NEAR_DIST  = FRONTIER_VISIT_RADIUS * 3  # only check diverge when this close
+    DIVERGE_WINDOW     = 12    # consecutive rising samples (3 seconds) while near goal
 
     gx, gz   = goal
     deadline = time.time() + timeout
-    dist_history = []
+
+    # Ring buffer for stall detection: (timestamp, distance) pairs
+    stall_history  = []
+    # Ring buffer for near-goal divergence detection
+    near_hist = []
 
     while time.time() < deadline:
         pos = agent_pos()
         if pos is not None:
             dist = np.hypot(pos[0] - gx, pos[2] - gz)
 
+            # ── Arrival check ─────────────────────────────────────────────
             if dist < FRONTIER_VISIT_RADIUS:
                 return True
 
-            dist_history.append(dist)
+            now = time.time()
+            stall_history.append((now, dist))
 
-            # Only check divergence once we have enough samples.
-            if len(dist_history) >= DIVERGE_WINDOW:
-                window = dist_history[-DIVERGE_WINDOW:]
-                # All consecutive differences positive → strictly increasing.
-                if all(window[i] < window[i+1] for i in range(len(window)-1)):
-                    print(f"[Explorer] Distance to ({gx:.1f}, {gz:.1f}) "
-                          f"increasing for {DIVERGE_WINDOW} samples "
-                          f"(last={dist:.2f}m) — abandoning goal.")
-                    return False
+            # ── Stall guard ───────────────────────────────────────────────
+            # Drop samples older than STALL_WINDOW
+            stall_history = [(t, d) for t, d in stall_history
+                             if now - t <= STALL_WINDOW]
+            if len(stall_history) >= 4:
+                oldest_dist = stall_history[0][1]
+                improvement = oldest_dist - dist   # positive = getting closer
+                if improvement < STALL_IMPROVEMENT:
+                    elapsed = now - stall_history[0][0]
+                    if elapsed >= STALL_WINDOW:
+                        print(f"[Explorer] Stalled near ({gx:.1f}, {gz:.1f}): "
+                              f"only {improvement:.2f}m improvement in "
+                              f"{elapsed:.1f}s — abandoning.")
+                        return False
+
+            # ── Near-goal diverge guard ───────────────────────────────────
+            # Only check this when the agent is already close, so the normal
+            # rotation-then-translate startup phase doesn't false-trigger it.
+            if dist < DIVERGE_NEAR_DIST:
+                near_hist.append(dist)
+                if len(near_hist) > DIVERGE_WINDOW:
+                    near_hist.pop(0)
+                if len(near_hist) == DIVERGE_WINDOW:
+                    if all(near_hist[i] < near_hist[i+1]
+                           for i in range(DIVERGE_WINDOW - 1)):
+                        print(f"[Explorer] Diverging from ({gx:.1f}, {gz:.1f}) "
+                              f"while near (last={dist:.2f}m) — abandoning.")
+                        return False
+            else:
+                # Reset near-history if agent wanders back out of the zone
+                near_hist.clear()
 
         time.sleep(poll)
 
@@ -256,16 +307,12 @@ def _wait_for_arrival(agent_pos, goal, timeout=60.0, poll=0.25):
 if __name__ == "__main__":
     print("Starting perception server + autonomous exploration …")
 
-    # Sensor server runs in its own daemon thread.
     t_sensor = threading.Thread(target=sensor_server, daemon=True)
     t_sensor.start()
 
-    # Exploration loop runs in its own daemon thread so KeyboardInterrupt
-    # on the main thread cleanly stops everything.
     t_explore = threading.Thread(target=exploration_loop, daemon=True)
     t_explore.start()
 
-    # Keep the main thread alive.
     try:
         while True:
             time.sleep(1)
