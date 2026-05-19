@@ -36,7 +36,7 @@ Material:
         m_Offset: {x: 0, y: 0}
     - _Basecolor:
         m_Texture: {fileID: 2800000, guid: e576116b14841c5438d3e07869aabf20, type: 3}
-        m_Scale: {x: 1, y: 1}
+        m_Scale: {x: 0.5, y: 0.5}
         m_Offset: {x: 0, y: 0}
     - _BumpMap:
         m_Texture: {fileID: 0}
@@ -68,7 +68,7 @@ Material:
         m_Offset: {x: 0, y: 0}
     - _Normal:
         m_Texture: {fileID: 2800000, guid: 517ec077897c43f45bcec9693fb4da2f, type: 3}
-        m_Scale: {x: 1, y: 1}
+        m_Scale: {x: 0.5, y: 0.5}
         m_Offset: {x: 0, y: 0}
     - _NormalMap:
         m_Texture: {fileID: 2800000, guid: c64dc90ba60f2aa41845547afae4ae4d, type: 3}
@@ -76,7 +76,7 @@ Material:
         m_Offset: {x: 0, y: 0}
     - _ORM:
         m_Texture: {fileID: 2800000, guid: 51b0954d58196aa489c5561880de95a7, type: 3}
-        m_Scale: {x: 1, y: 1}
+        m_Scale: {x: 0.5, y: 0.5}
         m_Offset: {x: 0, y: 0}
     - _ORMMap:
         m_Texture: {fileID: 2800000, guid: b9fab3a805a3c5d418abb5206cecf9d8, type: 3}
@@ -161,7 +161,7 @@ Material:
     - _RefractionModel: 0
     - _RenderQueueType: 1
     - _RequireSplitLighting: 0
-    - _RoughnessMultiplier: 1
+    - _RoughnessMultiplier: 0.95
     - _RoughnessPower: 1
     - _RoughnessScale: 1
     - _Roughness_Multiplier: 1
@@ -198,6 +198,7 @@ Material:
     m_Colors:
     - _AmbientColor: {r: 0.14999998, g: 0.14999998, b: 0.14999998, a: 1}
     - _Color: {r: 1, g: 1, b: 1, a: 1}
+    - _ColorMultiplier: {r: 1, g: 1, b: 1, a: 0}
     - _DoubleSidedConstants: {r: 1, g: 1, b: -1, a: 0}
     - _EmissionColor: {r: 1, g: 1, b: 1, a: 1}
     - _EmissiveA: {r: 0, g: 0, b: 0, a: 1}
