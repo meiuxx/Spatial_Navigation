@@ -3,7 +3,7 @@ import perception.clipy as clipy
 
 from navigation.mapper import SemanticMapper
 
-SALIENCY_MEAN_THRESHOLD = 0.04
+SALIENCY_MEAN_THRESHOLD = 0.05
 
 TARGET_CLASSES = [
     "a long couch",
