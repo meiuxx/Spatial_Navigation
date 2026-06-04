@@ -7,18 +7,23 @@ ModelImporter:
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
-      name: case2
+      name: Metal
+    second: {fileID: 2100000, guid: b28ce52b027e15243afe9116338b9eeb, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: MetalBlack
     second: {fileID: 2100000, guid: b48ec3c8ebde0a7498ccfe676074c00f, type: 2}
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
-      name: glass
-    second: {fileID: 2100000, guid: 9ba5d3fad798dd7478dc12cf68b77c24, type: 2}
+      name: Whirlpool ywet4027hw_02
+    second: {fileID: 2100000, guid: 57eb588ab0841bf4582df855cd3387a1, type: 2}
   - first:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
-      name: metal
-    second: {fileID: 2100000, guid: b28ce52b027e15243afe9116338b9eeb, type: 2}
+      name: WhiteMetal
+    second: {fileID: 2100000, guid: 02e09d51640b7eb438f5bbe617fad338, type: 2}
   materials:
     materialImportMode: 2
     materialName: 0

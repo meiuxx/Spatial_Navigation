@@ -18,7 +18,7 @@ ModelImporter:
       type: UnityEngine:Material
       assembly: UnityEngine.CoreModule
       name: KB3D_ECE_EmissiveRed
-    second: {fileID: 2100000, guid: b7b4e228db6fa4d48801fca321f09b4a, type: 2}
+    second: {fileID: 2100000, guid: ffa5f6bd48973714eb7a5569e7e310dc, type: 2}
   materials:
     materialImportMode: 2
     materialName: 0
@@ -61,7 +61,7 @@ ModelImporter:
     nodeNameCollisionStrategy: 1
     fileIdsGeneration: 2
     swapUVChannels: 0
-    generateSecondaryUV: 0
+    generateSecondaryUV: 1
     useFileUnits: 1
     keepQuads: 0
     weldVertices: 1

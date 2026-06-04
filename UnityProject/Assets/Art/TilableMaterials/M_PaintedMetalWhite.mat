@@ -255,7 +255,7 @@ Material:
     - _LinkDetailsWithBase: 1
     - _MaterialID: 1
     - _MaterialTypeMask: 2
-    - _Metallic: 1
+    - _Metallic: 0.5
     - _MetallicRemapMax: 1
     - _MetallicRemapMin: 0
     - _Mode: 0
@@ -279,7 +279,7 @@ Material:
     - _RenderQueueType: 1
     - _RequireSplitLighting: 0
     - _RoughnessMultiplier: 0.85
-    - _Smoothness: 0.24
+    - _Smoothness: 0.75
     - _SmoothnessRemapMax: 1
     - _SmoothnessRemapMin: 0
     - _SmoothnessTextureChannel: 0
