@@ -12,7 +12,7 @@ using System.IO;
 public class GraphVisualizer : MonoBehaviour
 {
     public int listenPort = 5006;            // Port to listen on
-    public float sphereRadius = 2f;
+    public float sphereRadius = 0.5f;
     public Color nodeColor = Color.cyan;
     public Color edgeColor = Color.yellow;
 
