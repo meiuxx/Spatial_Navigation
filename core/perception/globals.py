@@ -1,75 +1,118 @@
-# perception/globals.py
-#
-# Single source of truth for all model instances.
-# One CLIP model loaded here serves both:
-#   1. Object classification  (salient crop → TARGET_CLASSES label)
-#   2. Scene classification   (full frame → room label via linear probe)
-
 from perception.saliency import BASNetSaliency
 import perception.clipy as clipy
 from navigation.mapper import SemanticMapper
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 
-# BASNet: frames with mean saliency below this are considered featureless
-# and skipped for landmark storage (occupancy map still updates every frame)
 SALIENCY_MEAN_THRESHOLD = 0.043
-# ── Object classes for CLIP ───────────────────────────────────────────────────
-# Used when classifying the salient crop found by BASNet.
-# These are open-vocabulary object descriptions — anything YOLO wasn't
-# trained on can still be caught and labelled here.
+
 
 TARGET_CLASSES = [
 
-    # ── Navigation anchors (highest landmark value) ───────────────────────────
+    # ── Navigation anchors ────────────────────────────────────────────────────
     "a hospital hallway",
     "a corridor intersection",
-    "a room entrance doorway",
+    "room entrance doorway",
     "hospital double swing doors",
     "a support pillar",
-    "a room divider",
+    "a green medical screen divider",
 
     # ── Reception & waiting areas ─────────────────────────────────────────────
     "a hospital reception desk",
-    "a waiting area chair",
     "a long couch or sofa",
-    "a single armchair",
+    "a padded waiting area chair",
+    "a wall mounted TV",
+    "an emergency department sign in red font",
 
     # ── Clinical furniture ────────────────────────────────────────────────────
     "a hospital bed",
     "a medical examination table",
-    "a wooden executive desk",
-    "a medical office desk",
-    "a small meeting table",
-    "a doctor office chair",
-    "a visitor sitting chair",
+    "a surgical operating table",
+    "a large office desk",
+    "a meeting room table",
+    "a wheeled office chair",
+    "a meeting room chair",
     "a glass display cabinet",
-    "a document storage drawer",
+    "a wooden wardrobe",
+    "a metal locker cabinet",
+    "a laboratory workbench",
+    "a wall mounted cabinet",
+    "a visitor chair",
+    "a black metal display cabinet",
 
     # ── Medical equipment ─────────────────────────────────────────────────────
-    "a medical lightbox screen",
     "a medical monitor on a wheeled cart",
+    "a blue medical oxygen cylinder",
     "an IV pole",
     "a wheelchair",
-
-    # ── Tech ──────────────────────────────────────────────────────────────────
-    "a desktop screen",
-    "a computer input device",
+    "a patient monitor",
+    "a surgical ceiling light",
+    "a ceiling mounted display",
+    "a anesthesia machine",
+    "a ventilator machine",
+    "an anesthesia/ventilator cart with vital signs monitor",
+    "a ultrasound machine",
+    "an MRI machine",
+    "a surgical instrument tray",
+    "a surgical equipment trolley",
+    "a medical supply cart",
+    "a medical cooler box",
+    "a headwall panel",
+    "a microscope",
+    "a specimen tube rack",
+    "a medical X-ray viewer lightbox",
 
     # ── Utility & environment ─────────────────────────────────────────────────
     "a yellow cleaning cart",
-    "a water dispenser",
-    "a fluorescent panel",
+    "a water cooler",
+    "a ceiling light panel",
+    "a electrical outlet panel",
+    "a fire alarm pull station",
+    "a balloon bouquet",
+    "a multi tier supply shelving unit",
+    "a hospital gown hanging on rack",
 
     # ── Signage ───────────────────────────────────────────────────────────────
-    "a wall mounted hospital sign",
     "a directional sign with arrows",
     "a health awareness poster on a wall",
     "a toilet sign",
+    "a yellow and blue laboratory warning sign",
+    "a wall mounted bulletin board",
 
-    # ── Decor (useful for negative matching) ──────────────────────────────────
+    # ── Bathroom ─────────────────────────────────────────────────────────────
+    "a bathroom privacy cubicle",
+    "a toilet cubicle door",
+    "a wall mounted mirror",
+    "a countertop washbasin",
+    "a toilet",
+    "a multi basin sink",
+    "a soap dispenser",
+    "a bathroom vanity light",
+    "a bathroom mirror",
+
+    # ── Cafeteria & dining ────────────────────────────────────────────────────
+    "a high bar stool chair",
+    "a cafeteria dining table with attached seating",
+    "a vending machine with snacks and drinks",
+    "a cold drinks dispenser",
+    "a food service station counter",
+
+    # ── Shop & pharmacy ───────────────────────────────────────────────────────
+    "a retail shelf unit with price tags",
+    "a pegboard display wall",
+    "a chest freezer display unit",
+    "a shop checkout counter",
+
+    # ── Misc ──────────────────────────────────────────────────────────────────
+    "a desktop monitor",
     "a decorative potted plant",
-    "a decorative wall art",
+    "a decorative wall sign",
+
+    # ── Laboratory ─────────────────────────────────────────────────────────────
+    "a blue laboratory analysis machine",
+    "a laboratory sample containers rack",
+    "a laboratory conical flask",
+
 ]
 
 # ── Model instances ───────────────────────────────────────────────────────────

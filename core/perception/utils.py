@@ -1,4 +1,3 @@
-
 import numpy as np
 import cv2
 from PIL import Image
@@ -30,7 +29,11 @@ def draw_saliency_map(sal_map, bbox=None, title="Saliency"):
         cv2.rectangle(disp, (x, y), (x + w, y + h), 255, 2)
     cv2.imshow(title, disp)
 
-def draw_rgb_with_bbox(rgb_np, bbox, center, pos_3d, title="RGB"):
+def draw_rgb_with_bbox(rgb_np, bbox, center, pos_3d, title="RGB",
+                       clip_label=None, clip_score=None):
+    """
+    Draw RGB image with bounding box, 3D position, and optional CLIP label.
+    """
     img = rgb_np.copy()
     x, y, w, h = bbox
     cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
@@ -38,6 +41,15 @@ def draw_rgb_with_bbox(rgb_np, bbox, center, pos_3d, title="RGB"):
     if pos_3d:
         text = f"X:{pos_3d[0]:.2f} Y:{pos_3d[1]:.2f} Z:{pos_3d[2]:.2f}"
         cv2.putText(img, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+    # Draw CLIP classification (if provided)
+    if clip_label:
+        label_text = f"CLIP: {clip_label} ({clip_score*100:.1f}%)" if clip_score else clip_label
+        # Put text just above the bounding box (or inside if near top edge)
+        text_y = y - 25 if y > 30 else y + h + 20
+        cv2.putText(img, label_text, (x, text_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 200, 0), 2, cv2.LINE_AA)
+
     h, w = img.shape[:2]
     if w > 800:
         scale = 800 / w

@@ -7,6 +7,8 @@ import cv2
 from PIL import Image
 import io
 from scipy.spatial.transform import Rotation as R
+import os
+from pathlib import Path
 
 # Local imports
 from perception.globals import (
@@ -37,6 +39,10 @@ occupancy_map = OccupancyMap(
     floor_band = 1.2,
 )
 
+# ── Save classified crops ─────────────────────────────────────────────────────
+SAVE_CLIP_CROPS = True                     # set to False to disable saving
+CLIP_SAVE_DIR   = Path("classified_crops") # folder inside project root
+CLIP_SAVE_DIR.mkdir(exist_ok=True)
 
 
 # ── Main processing entry point ───────────────────────────────────────────────
@@ -166,6 +172,26 @@ def process_message(json_str, update_vis=False, vis_params=None):
                 print(f"[CLIP] Embedding error: {e}")
             print(f"[CLIP] {clip_label} ({clip_score:.3f})")
 
+                        # ── Save annotated cropped image ─────────────────────────────────────
+            if SAVE_CLIP_CROPS and obj_crop.size > 0:
+                import time
+                timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+                safe_label = clip_label.replace("/", "_").replace(" ", "_")
+                filename = f"{timestamp}_{safe_label}_{clip_score:.3f}_annotated.png"
+                filepath = CLIP_SAVE_DIR / filename
+
+                # Draw label on a copy of the crop
+                annotated_crop = obj_crop.copy()
+                label_text = f"{clip_label} ({clip_score*100:.1f}%)"
+                # Draw a background rectangle for better readability
+                (text_w, text_h), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(annotated_crop, (5, 5), (15 + text_w, 25 + text_h), (0, 0, 0), -1)
+                cv2.putText(annotated_crop, label_text, (10, 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+
+                cv2.imwrite(str(filepath), cv2.cvtColor(annotated_crop, cv2.COLOR_RGB2BGR))
+                print(f"[Saved annotated crop] {filepath}")
+                
     # ── 10. Visualisation ─────────────────────────────────────────────────────
     draw_depth_map(depth_linear, "Depth Map")
     draw_saliency_map(sal_map, bbox, "Saliency")
@@ -173,7 +199,8 @@ def process_message(json_str, update_vis=False, vis_params=None):
     if bbox:
         cx = bbox[0] + bbox[2] // 2
         cy = bbox[1] + bbox[3] // 2
-        draw_rgb_with_bbox(rgb_np, bbox, (cx, cy), pos_cam, "RGB Detection")
+        draw_rgb_with_bbox(rgb_np, bbox, (cx, cy), pos_cam, "RGB Detection",
+                           clip_label=clip_label, clip_score=clip_score)
     else:
         disp = cv2.resize(rgb_np, None, fx=0.5, fy=0.5) \
                if rgb_np.shape[1] > 800 else rgb_np.copy()
