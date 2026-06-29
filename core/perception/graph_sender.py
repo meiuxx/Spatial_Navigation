@@ -36,7 +36,7 @@ class GraphSender:
         """
         now = time.time()
         if now - self._last_sent < self.send_interval:
-            return  # rate-limit: don't even serialise if too soon
+            return
 
         try:
             data = self._serialise(graph)

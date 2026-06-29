@@ -8,12 +8,17 @@ from PIL import Image
 import io
 from scipy.spatial.transform import Rotation as R
 import os
+import time
 from pathlib import Path
+
+GRAPH_READ_ONLY = False
 
 # Local imports
 from perception.globals import (
     SALIENCY_MEAN_THRESHOLD,
     TARGET_CLASSES,
+    SCENE_CLASS_NAMES,
+    SCENE_CLASS_PROMPTS,
     saliency_detector,
     clip_model,
     semantic_mapper,
@@ -40,28 +45,15 @@ occupancy_map = OccupancyMap(
 )
 
 # ── Save classified crops ─────────────────────────────────────────────────────
-SAVE_CLIP_CROPS = True                     # set to False to disable saving
-CLIP_SAVE_DIR   = Path("classified_crops") # folder inside project root
+
+SAVE_CLIP_CROPS = True
+CLIP_SAVE_DIR   = Path("classified_crops")
 CLIP_SAVE_DIR.mkdir(exist_ok=True)
 
 
 # ── Main processing entry point ───────────────────────────────────────────────
 
 def process_message(json_str, update_vis=False, vis_params=None):
-    """
-    Full per-frame perception pipeline:
-
-      1.  Parse sensor JSON from Unity
-      2.  Decode RGB + depth
-      3.  Update occupancy map (every frame, unconditionally)
-      4.  OCR on full frame
-      5.  Saliency gate for landmark detection
-      6.  3D position + bounding box from saliency mask
-      7.  CLIP object classification on salient crop
-      8.  World coordinate transform
-      9.  Store landmark in semantic graph
-      10. Visualisation
-    """
 
     # ── 1. Parse JSON ─────────────────────────────────────────────────────────
     try:
@@ -87,6 +79,14 @@ def process_message(json_str, update_vis=False, vis_params=None):
         print(f"[Process] Missing key: {e}")
         return
 
+    # ── READ-ONLY FAST PATH ───────────────────────────────────────────────────
+    # When the graph is pre-loaded and we are only navigating (not building),
+    # skip every expensive pipeline stage: BASNet saliency, CLIP (object +
+    # scene), EasyOCR, and occupancy map updates.  The sensor feed is still
+    # decoded so that main.py can track the agent position from cam_pos.
+    if GRAPH_READ_ONLY:
+        return
+
     # ── 3. Decode RGB ─────────────────────────────────────────────────────────
     try:
         pil_img = Image.open(io.BytesIO(base64.b64decode(rgb_b64))).convert('RGB')
@@ -106,7 +106,7 @@ def process_message(json_str, update_vis=False, vis_params=None):
         print(f"[Process] Depth decode error: {e}")
         return
 
-    # ── 5. Occupancy map (unconditional — every frame) ────────────────────────
+    # ── 5. Occupancy map ──────────────────────────────────────────────────────
     occupancy_map.update(
         depth_linear = depth_linear,
         depth_w      = depth_w,
@@ -119,7 +119,7 @@ def process_message(json_str, update_vis=False, vis_params=None):
     )
     print(f"[Occupancy] {occupancy_map.get_frontier_count()} frontiers")
 
-    # ── 6. OCR (full frame, every frame) ──────────────────────────────────────
+    # ── 6. OCR ────────────────────────────────────────────────────────────────
     ocr_text = ocr.run_ocr(rgb_np)
     if ocr_text:
         print(f"[OCR] {ocr_text}")
@@ -130,14 +130,28 @@ def process_message(json_str, update_vis=False, vis_params=None):
         sal_mean = float(np.mean(sal_map))
     except Exception as e:
         print(f"[Saliency] Error: {e}")
-        occupancy_map.render(agent_pos=cam_pos, window_name="Occupancy Map")
+        _render_fallback(rgb_np, cam_pos, None, None, ocr_text)
         return
 
     if sal_mean < SALIENCY_MEAN_THRESHOLD:
-        print(f"[Saliency] Too low ({sal_mean:.3f}) — skipping landmark detection")
-        occupancy_map.render(agent_pos=cam_pos, window_name="Occupancy Map")
-        cv2.waitKey(1)
+        print(f"[Saliency] Too low ({sal_mean:.3f}) — skipping")
+        _render_fallback(rgb_np, cam_pos, None, None, ocr_text)
         return
+
+    # ── 8. Scene classification ───────────────────────────────────────────────
+    scene_label = None
+    scene_score = None
+
+    if clip_model is not None:
+        try:
+            scene_prompt, scene_score = clip_model.top_score(pil_img, SCENE_CLASS_PROMPTS)
+            if scene_prompt in SCENE_CLASS_PROMPTS:
+                scene_label = SCENE_CLASS_NAMES[SCENE_CLASS_PROMPTS.index(scene_prompt)]
+            else:
+                scene_label = scene_prompt
+            print(f"[SCENE] {scene_label} ({scene_score:.3f})")
+        except Exception as e:
+            print(f"[SCENE] Error: {e}")
 
     # ── 9. 3D position + bounding box from saliency ───────────────────────────
     result = get_object_3d_position(
@@ -151,48 +165,83 @@ def process_message(json_str, update_vis=False, vis_params=None):
     else:
         pos_cam, bbox, distance = result
 
-    # ── 10. CLIP object classification on salient crop ─────────────────────────
+    # ── 10. CLIP object classification on salient crop ────────────────────────
     clip_label = None
     clip_score = None
     clip_embed = np.zeros(512)
 
     if clip_model is not None and bbox is not None:
         x, y, w, h = bbox
-        obj_crop   = rgb_np[y:y+h, x:x+w]
+        obj_crop = rgb_np[y:y+h, x:x+w]
         if obj_crop.size > 0:
-            obj_pil    = Image.fromarray(obj_crop)
-            probs      = clip_model.score(obj_pil, TARGET_CLASSES)
-            best_idx   = int(np.argmax(probs))
-            clip_label = TARGET_CLASSES[best_idx]
-            clip_score = float(probs[best_idx])
+            obj_pil = Image.fromarray(obj_crop)
+            try:
+                probs      = clip_model.score(obj_pil, TARGET_CLASSES)
+                best_idx   = int(np.argmax(probs))
+                clip_label = TARGET_CLASSES[best_idx]
+                clip_score = float(probs[best_idx])
+                print(f"[CLIP OBJ] {clip_label} ({clip_score:.3f})")
+            except Exception as e:
+                print(f"[CLIP OBJ] Error: {e}")
+
             try:
                 emb_tensor = clip_model.encode_image(obj_pil)
                 clip_embed = emb_tensor.cpu().detach().numpy().flatten()
             except Exception as e:
-                print(f"[CLIP] Embedding error: {e}")
-            print(f"[CLIP] {clip_label} ({clip_score:.3f})")
+                print(f"[CLIP OBJ] Embedding error: {e}")
 
-                        # ── Save annotated cropped image ─────────────────────────────────────
-            if SAVE_CLIP_CROPS and obj_crop.size > 0:
-                import time
-                timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
-                safe_label = clip_label.replace("/", "_").replace(" ", "_")
-                filename = f"{timestamp}_{safe_label}_{clip_score:.3f}_annotated.png"
-                filepath = CLIP_SAVE_DIR / filename
+            if SAVE_CLIP_CROPS and clip_label is not None:
+                _save_annotated_crop(obj_crop, clip_label, clip_score)
 
-                # Draw label on a copy of the crop
-                annotated_crop = obj_crop.copy()
-                label_text = f"{clip_label} ({clip_score*100:.1f}%)"
-                # Draw a background rectangle for better readability
-                (text_w, text_h), baseline = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                cv2.rectangle(annotated_crop, (5, 5), (15 + text_w, 25 + text_h), (0, 0, 0), -1)
-                cv2.putText(annotated_crop, label_text, (10, 25),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+    # ── 11. Visualisation ─────────────────────────────────────────────────────
+    _render(
+        rgb_np       = rgb_np,
+        depth_linear = depth_linear,
+        sal_map      = sal_map,
+        bbox         = bbox,
+        pos_cam      = pos_cam,
+        clip_label   = clip_label,
+        clip_score   = clip_score,
+        scene_label  = scene_label,
+        scene_score  = scene_score,
+        ocr_text     = ocr_text,
+        cam_pos      = cam_pos,
+    )
 
-                cv2.imwrite(str(filepath), cv2.cvtColor(annotated_crop, cv2.COLOR_RGB2BGR))
-                print(f"[Saved annotated crop] {filepath}")
-                
-    # ── 10. Visualisation ─────────────────────────────────────────────────────
+    # ── 12. World coordinate transform + landmark storage ─────────────────────
+    if pos_cam is not None and distance is not None:
+        point_cam_rh   = np.array([ pos_cam[0], -pos_cam[1], -pos_cam[2]])
+        cam_pos_rh     = np.array([ cam_pos[0],  cam_pos[1], -cam_pos[2]])
+        cam_rot_rh     = np.array([-cam_rot[0], -cam_rot[1],  cam_rot[2], cam_rot[3]])
+        r              = R.from_quat(cam_rot_rh)
+        point_world_rh = cam_pos_rh + r.apply(point_cam_rh)
+        point_world    = np.array([point_world_rh[0],
+                                   point_world_rh[1],
+                                  -point_world_rh[2]])
+
+        semantic_mapper.add_landmark(
+            pos=point_world,
+            clip_embedding=clip_embed,
+            ocr_text=ocr_text,
+            timestamp=timestamp,
+            saliency_mean=sal_mean,
+            clip_label=clip_label,
+            scene_label=scene_label,
+            scene_score=scene_score,
+            distance=distance,
+            clip_score=clip_score,
+        )
+        print(f"[Landmark] World pos: ({point_world[0]:.2f}, "
+              f"{point_world[1]:.2f}, {point_world[2]:.2f})")
+    else:
+        print("[Landmark] No salient object or invalid depth — skipping")
+
+
+# ── Private helpers ───────────────────────────────────────────────────────────
+
+def _render(rgb_np, depth_linear, sal_map, bbox, pos_cam,
+            clip_label, clip_score, scene_label, scene_score,
+            ocr_text, cam_pos):
     draw_depth_map(depth_linear, "Depth Map")
     draw_saliency_map(sal_map, bbox, "Saliency")
 
@@ -202,46 +251,66 @@ def process_message(json_str, update_vis=False, vis_params=None):
         draw_rgb_with_bbox(rgb_np, bbox, (cx, cy), pos_cam, "RGB Detection",
                            clip_label=clip_label, clip_score=clip_score)
     else:
-        disp = cv2.resize(rgb_np, None, fx=0.5, fy=0.5) \
-               if rgb_np.shape[1] > 800 else rgb_np.copy()
-        cv2.imshow("RGB Detection", disp)
+        disp = _scale_for_display(rgb_np)
+        cv2.imshow("RGB Detection", cv2.cvtColor(disp, cv2.COLOR_RGB2BGR))
 
-    # Overlay OCR text on preview
-    disp_info = rgb_np.copy()
-    if rgb_np.shape[1] > 800:
-        disp_info = cv2.resize(disp_info, None, fx=0.5, fy=0.5)
-    if ocr_text:
-        cv2.putText(disp_info, f"OCR: {ocr_text[:60]}",
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.55, (255, 200, 0), 2, cv2.LINE_AA)
-    cv2.imshow("OCR", disp_info)
-
+    _render_info_overlay(rgb_np, scene_label, scene_score, ocr_text)
     occupancy_map.render(agent_pos=cam_pos, window_name="Occupancy Map")
     cv2.waitKey(1)
 
-    # ── 11. World coordinate transform + landmark storage ─────────────────────
-    if pos_cam is not None and distance is not None:
-        point_cam_rh   = np.array([ pos_cam[0], -pos_cam[1], -pos_cam[2]])
-        cam_pos_rh     = np.array([ cam_pos[0],  cam_pos[1], -cam_pos[2]])
-        cam_rot_rh     = np.array([-cam_rot[0], -cam_rot[1],  cam_rot[2], cam_rot[3]])
-        r              = R.from_quat(cam_rot_rh)
-        point_world_rh = cam_pos_rh + r.apply(point_cam_rh)
-        point_world    = np.array([point_world_rh[0],
-                                   point_world_rh[1],
-                                   -point_world_rh[2]])
 
-        print(f"[Landmark] World pos: ({point_world[0]:.2f}, "
-              f"{point_world[1]:.2f}, {point_world[2]:.2f})")
+def _render_fallback(rgb_np, cam_pos, scene_label, scene_score, ocr_text):
+    disp = _scale_for_display(rgb_np)
+    cv2.imshow("RGB Detection", cv2.cvtColor(disp, cv2.COLOR_RGB2BGR))
+    _render_info_overlay(rgb_np, scene_label, scene_score, ocr_text)
+    occupancy_map.render(agent_pos=cam_pos, window_name="Occupancy Map")
+    cv2.waitKey(1)
 
-        semantic_mapper.add_landmark(
-            pos            = point_world,
-            clip_embedding = clip_embed,
-            ocr_text       = ocr_text,
-            timestamp      = timestamp,
-            saliency_mean  = sal_mean,
-            clip_label     = clip_label,
-            distance       = distance,
-            clip_score     = clip_score,
-        )
-    else:
-        print("[Landmark] No salient object or invalid depth — skipping")
+
+def _render_info_overlay(rgb_np, scene_label, scene_score, ocr_text):
+    disp = _scale_for_display(rgb_np.copy())
+    disp = cv2.cvtColor(disp, cv2.COLOR_RGB2BGR)
+    y_cursor = 30
+
+    if scene_label is not None:
+        scene_text = f"SCENE: {scene_label} ({scene_score*100:.1f}%)"
+        (tw, th), _ = cv2.getTextSize(scene_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+        cv2.rectangle(disp, (5, y_cursor - th - 4), (15 + tw, y_cursor + 4), (0, 0, 0), -1)
+        cv2.putText(disp, scene_text, (10, y_cursor),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
+        y_cursor += 35
+
+    if ocr_text:
+        ocr_display = f"OCR: {ocr_text[:80]}"
+        (tw, th), _ = cv2.getTextSize(ocr_display, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+        cv2.rectangle(disp, (5, y_cursor - th - 4), (15 + tw, y_cursor + 4), (0, 0, 0), -1)
+        cv2.putText(disp, ocr_display, (10, y_cursor),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 200, 0), 2, cv2.LINE_AA)
+
+    cv2.imshow("Scene / OCR", disp)
+
+
+def _save_annotated_crop(obj_crop, clip_label, clip_score):
+    try:
+        ts         = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+        safe_label = clip_label.replace("/", "_").replace(" ", "_")
+        filename   = f"{ts}_{safe_label}_{clip_score:.3f}.png"
+        filepath   = CLIP_SAVE_DIR / filename
+        annotated  = obj_crop.copy()
+        label_text = f"{clip_label} ({clip_score*100:.1f}%)"
+        (tw, th), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        cv2.rectangle(annotated, (5, 5), (15 + tw, 25 + th), (0, 0, 0), -1)
+        cv2.putText(annotated, label_text, (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+        cv2.imwrite(str(filepath), cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR))
+        print(f"[Crop] Saved → {filepath}")
+    except Exception as e:
+        print(f"[Crop] Save error: {e}")
+
+
+def _scale_for_display(img_np, max_width=800):
+    h, w = img_np.shape[:2]
+    if w > max_width:
+        scale = max_width / w
+        return cv2.resize(img_np, None, fx=scale, fy=scale)
+    return img_np

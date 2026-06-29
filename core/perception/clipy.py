@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 
 class CLIPModel:
-    def __init__(self, model_name="ViT-B/32", device=None):
+    def __init__(self, model_name="ViT-B/32", device=None, finetuned_path=None):
         if device is None:
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
@@ -12,12 +12,18 @@ class CLIPModel:
 
         print(f"Loading CLIP model '{model_name}' on {self.device}...")
         self.model, self.preprocess = clip.load(model_name, device=self.device)
-        print("loaded model correctly")
+
+        if finetuned_path is not None:
+            print(f"Loading fine-tuned weights from {finetuned_path}...")
+            state = torch.load(finetuned_path, map_location=self.device)
+            self.model.load_state_dict(state)
+            print("Fine-tuned weights loaded.")
+
         self.model.eval()
-        print("in evaluation")
+        print("Model ready.")
 
     def encode_text(self, text_list):
-        tokens = clip.tokenize(text_list).to(self.device)
+        tokens = clip.tokenize(text_list, truncate=True).to(self.device)
         with torch.no_grad():
             text_features = self.model.encode_text(tokens)
             text_features /= text_features.norm(dim=-1, keepdim=True)
@@ -32,11 +38,8 @@ class CLIPModel:
 
     def score(self, pil_image, text_list):
         image_features = self.encode_image(pil_image)
-        text_features = self.encode_text(text_list)
-
-        # Cosine similarity (already normalised)
-        similarity = (image_features @ text_features.T).squeeze(0)  # shape: (n_texts,)
-        # Convert to probabilities via softmax (temperature from CLIP is implicit)
+        text_features  = self.encode_text(text_list)
+        similarity = (image_features @ text_features.T).squeeze(0)
         probs = similarity.softmax(dim=-1).cpu().numpy()
         return probs
 
