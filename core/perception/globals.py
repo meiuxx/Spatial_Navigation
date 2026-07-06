@@ -1,27 +1,13 @@
-# perception/globals.py
-#
-# When GRAPH_READ_ONLY is True (set by main.py before this module is imported)
-# the heavy models — BASNet, CLIP — are NOT loaded.  process.py returns at the
-# top of its fast path before touching any of them, so the stubs below are
-# never actually called.  This cuts startup time by ~10-30 s and saves ~1 GB
-# of GPU memory during navigation-only runs.
-
 import os
 
-# ── Read-only flag ────────────────────────────────────────────────────────────
-# main.py sets this to True before importing perception.globals when it detects
-# a usable saved graph.  Check the env-var as a fallback so the flag survives
-# even if the import order changes.
 GRAPH_READ_ONLY: bool = os.environ.get("GRAPH_READ_ONLY", "0") == "1"
 
-# ── Thresholds ────────────────────────────────────────────────────────────────
 SALIENCY_MEAN_THRESHOLD = 0.043
 
-# ── Scene classifier config ───────────────────────────────────────────────────
 FINETUNED_MODEL_PATH = (
     "C:\\Users\\ALIENWARE\\Unity\\Spatial_Navigation_proj\\core\\"
     "perception\\clip_hospital_finetuned.pt"
-)  # set to None to use zero-shot
+)  # None to use zero-shot
 
 SCENE_CLASSES = {
     "Administration":           "a hospital administration office with desks, computers, and office chairs",
@@ -87,12 +73,8 @@ TARGET_CLASSES = [
     "a laboratory conical flask",
 ]
 
-# ── Model instances ───────────────────────────────────────────────────────────
-
 if GRAPH_READ_ONLY:
-    # Navigation-only mode: skip loading heavy models entirely.
-    # process.py returns before touching these, but define stubs so any
-    # accidental import-time reference doesn't raise NameError.
+    # Skip loading heavy models; stubs so an accidental reference doesn't NameError.
     print("[Globals] Read-only mode — skipping BASNet, CLIP, and OCR model load.")
     saliency_detector = None
     clip_model        = None
@@ -103,6 +85,5 @@ else:
     saliency_detector = BASNetSaliency()
     clip_model        = clipy.CLIPModel(finetuned_path=FINETUNED_MODEL_PATH)
 
-# ── Semantic graph (always loaded) ────────────────────────────────────────────
 from navigation.mapper import SemanticMapper
 semantic_mapper = SemanticMapper(spatial_threshold=1.0, semantic_threshold=0.85)

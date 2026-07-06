@@ -13,7 +13,6 @@ from pathlib import Path
 
 GRAPH_READ_ONLY = False
 
-# Local imports
 from perception.globals import (
     SALIENCY_MEAN_THRESHOLD,
     TARGET_CLASSES,
@@ -53,16 +52,16 @@ CLIP_SAVE_DIR.mkdir(exist_ok=True)
 
 # ── Main processing entry point ───────────────────────────────────────────────
 
-def process_message(json_str, update_vis=False, vis_params=None):
+def process_message(json_str):
 
-    # ── 1. Parse JSON ─────────────────────────────────────────────────────────
+    # Parse JSON
     try:
         msg = json.loads(json_str)
     except json.JSONDecodeError as e:
         print(f"[Process] Invalid JSON: {e}")
         return
 
-    # ── 2. Extract fields ─────────────────────────────────────────────────────
+    # Extract fields
     try:
         rgb_b64   = msg['rgb']
         depth_b64 = msg['depth']
@@ -79,15 +78,12 @@ def process_message(json_str, update_vis=False, vis_params=None):
         print(f"[Process] Missing key: {e}")
         return
 
-    # ── READ-ONLY FAST PATH ───────────────────────────────────────────────────
-    # When the graph is pre-loaded and we are only navigating (not building),
-    # skip every expensive pipeline stage: BASNet saliency, CLIP (object +
-    # scene), EasyOCR, and occupancy map updates.  The sensor feed is still
-    # decoded so that main.py can track the agent position from cam_pos.
+    # Read-only (navigation-only) mode: skip saliency/CLIP/OCR/occupancy,
+    # still decode enough to track agent position from cam_pos.
     if GRAPH_READ_ONLY:
         return
 
-    # ── 3. Decode RGB ─────────────────────────────────────────────────────────
+    # Decode RGB
     try:
         pil_img = Image.open(io.BytesIO(base64.b64decode(rgb_b64))).convert('RGB')
         rgb_np  = np.array(pil_img)
@@ -95,7 +91,7 @@ def process_message(json_str, update_vis=False, vis_params=None):
         print(f"[Process] RGB decode error: {e}")
         return
 
-    # ── 4. Decode depth ───────────────────────────────────────────────────────
+    # Decode depth
     try:
         depth_flat = np.frombuffer(base64.b64decode(depth_b64), dtype=np.float32)
         if len(depth_flat) != depth_w * depth_h:
@@ -106,7 +102,7 @@ def process_message(json_str, update_vis=False, vis_params=None):
         print(f"[Process] Depth decode error: {e}")
         return
 
-    # ── 5. Occupancy map ──────────────────────────────────────────────────────
+    # Occupancy map
     occupancy_map.update(
         depth_linear = depth_linear,
         depth_w      = depth_w,
@@ -119,12 +115,12 @@ def process_message(json_str, update_vis=False, vis_params=None):
     )
     print(f"[Occupancy] {occupancy_map.get_frontier_count()} frontiers")
 
-    # ── 6. OCR ────────────────────────────────────────────────────────────────
+    # OCR
     ocr_text = ocr.run_ocr(rgb_np)
     if ocr_text:
         print(f"[OCR] {ocr_text}")
 
-    # ── 7. Saliency gate ──────────────────────────────────────────────────────
+    # Saliency gate
     try:
         sal_map  = saliency_detector.get_saliency_map(pil_img)
         sal_mean = float(np.mean(sal_map))
@@ -138,7 +134,7 @@ def process_message(json_str, update_vis=False, vis_params=None):
         _render_fallback(rgb_np, cam_pos, None, None, ocr_text)
         return
 
-    # ── 8. Scene classification ───────────────────────────────────────────────
+    # Scene classification
     scene_label = None
     scene_score = None
 
@@ -153,7 +149,7 @@ def process_message(json_str, update_vis=False, vis_params=None):
         except Exception as e:
             print(f"[SCENE] Error: {e}")
 
-    # ── 9. 3D position + bounding box from saliency ───────────────────────────
+    # 3D position + bounding box from saliency
     result = get_object_3d_position(
         rgb_np, sal_map, depth_linear, depth_w, depth_h, fov
     )
@@ -165,7 +161,7 @@ def process_message(json_str, update_vis=False, vis_params=None):
     else:
         pos_cam, bbox, distance = result
 
-    # ── 10. CLIP object classification on salient crop ────────────────────────
+    # CLIP object classification on salient crop
     clip_label = None
     clip_score = None
     clip_embed = np.zeros(512)
@@ -193,7 +189,7 @@ def process_message(json_str, update_vis=False, vis_params=None):
             if SAVE_CLIP_CROPS and clip_label is not None:
                 _save_annotated_crop(obj_crop, clip_label, clip_score)
 
-    # ── 11. Visualisation ─────────────────────────────────────────────────────
+    # Visualisation
     _render(
         rgb_np       = rgb_np,
         depth_linear = depth_linear,
@@ -208,7 +204,7 @@ def process_message(json_str, update_vis=False, vis_params=None):
         cam_pos      = cam_pos,
     )
 
-    # ── 12. World coordinate transform + landmark storage ─────────────────────
+    # World coordinate transform + landmark storage
     if pos_cam is not None and distance is not None:
         point_cam_rh   = np.array([ pos_cam[0], -pos_cam[1], -pos_cam[2]])
         cam_pos_rh     = np.array([ cam_pos[0],  cam_pos[1], -cam_pos[2]])

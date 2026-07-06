@@ -4,7 +4,6 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 import torchvision.transforms as transforms
-import cv2
 
 BASNET_REPO_PATH = "C:/Users/ALIENWARE/Desktop/cloned repos/BASNet"  # Path to cloned repo
 BASNET_MODEL_PATH = "C:/Users/ALIENWARE/Desktop/cloned repos/BASNet/saved_models/basnet_bsi/basnet.pth"
@@ -72,18 +71,3 @@ class BASNetSaliency:
 
         sal_map = self.get_saliency_map(image_pil)
         return float(np.mean(sal_map))
-    
-    def draw_saliency_map(sal_map, bbox=None, title="Saliency"):
-        sal_uint8 = (sal_map * 255).astype(np.uint8)
-        h, w = sal_uint8.shape
-        scale = 400 / w
-        disp = cv2.resize(sal_uint8, None, fx=scale, fy=scale)
-        if bbox:
-            x, y, w, h = bbox
-            x = int(x * scale)
-            y = int(y * scale)
-            w = int(w * scale)
-            h = int(h * scale)
-            cv2.rectangle(disp, (x, y), (x + w, y + h), 255, 2)
-        cv2.imshow(title, disp)
-    

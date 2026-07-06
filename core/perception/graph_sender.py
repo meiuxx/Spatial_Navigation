@@ -28,12 +28,9 @@ class GraphSender:
     # ── Public API ────────────────────────────────────────────────────────
 
     def send_graph(self, graph):
-        """
-        Non-blocking. Serialises the graph and drops it in the pending slot.
-        The background worker sends it when the interval has elapsed.
-        If a previous unsent graph is waiting it is silently replaced —
-        only the latest state matters.
-        """
+        """Non-blocking. Drops the serialised graph in the pending slot;
+        the worker thread sends it once the interval has elapsed. Any
+        unsent previous graph is replaced -- only the latest state matters."""
         now = time.time()
         if now - self._last_sent < self.send_interval:
             return
@@ -45,7 +42,7 @@ class GraphSender:
             return
 
         with self._pending_lock:
-            self._pending = data  # overwrite any unsent previous graph
+            self._pending = data
 
     def close(self):
         self.connected = False
@@ -58,12 +55,8 @@ class GraphSender:
     # ── Background worker ─────────────────────────────────────────────────
 
     def _worker(self):
-        """
-        Runs on a daemon thread.
-        Connects to Unity, then loops sending pending graphs.
-        If the connection drops it keeps retrying.
-        Never touches the main thread.
-        """
+        """Connects to Unity and loops sending pending graphs, reconnecting
+        on failure. Runs on a daemon thread, never blocks the main thread."""
         while True:
             if not self.connected:
                 self._try_connect()

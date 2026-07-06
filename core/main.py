@@ -1,4 +1,5 @@
 import socket
+import sys
 import threading
 import time
 import json
@@ -32,16 +33,12 @@ IDLE_RETRY_SECS = 2.0
 sender = GraphSender(host=GRAPH_HOST, port=GRAPH_PORT)
 
 # ── NavMesh command sender ─────────────────────────────────────────────────────
-import threading as _threading
-
 _nav_sock      = None
-_nav_sock_lock = _threading.Lock()
+_nav_sock_lock = threading.Lock()
 
 def _send_navmesh_move(tx, tz, theta=0.0):
-    """
-    Send one move_to command to Unity over a persistent socket and return True
-    on success, False on failure.  Reconnects once if the socket is broken.
-    """
+    """Send one move_to command to Unity over a persistent socket. Returns
+    True on success. Reconnects once if the socket is broken."""
     global _nav_sock
     cmd = json.dumps({"command": "move_to", "x": tz, "y": tx, "theta": theta}) + "\n"
     with _nav_sock_lock:
@@ -74,8 +71,7 @@ GRAPH_SAVE_PATH = "C:\\Users\\ALIENWARE\\Unity\\Spatial_Navigation_proj\\core\\L
 GRAPH_MIN_NODES_FOR_READONLY = 5
 
 # ── CLI flags ─────────────────────────────────────────────────────────────────
-import sys as _sys
-_FORCE_FRESH = "--fresh" in _sys.argv
+_FORCE_FRESH = "--fresh" in sys.argv
 
 # ── Load previous graph if it exists ──────────────────────────────────────────
 GRAPH_READ_ONLY = False

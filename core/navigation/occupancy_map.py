@@ -1,18 +1,3 @@
-# navigation/occupancy_map.py
-#
-# Builds a 2-D top-down occupancy grid from per-frame depth maps.
-# Coordinate conventions match the rest of the project:
-#   - Unity is LEFT-HANDED  (Y up, Z forward)
-#   - Internally we convert to RIGHT-HANDED for maths, then back.
-#   - The 2-D grid lives in the Unity X-Z plane (horizontal floor plane).
-#
-# Cell states
-#   UNKNOWN   = 0   (grey)
-#   FREE      = 1   (white)
-#   OCCUPIED  = 2   (black)
-#
-# Frontiers = clusters of FREE cells that border at least one UNKNOWN cell.
-
 import math
 import numpy as np
 import cv2
@@ -28,45 +13,16 @@ class OccupancyMap:
     """
     2-D occupancy grid built from depth images sent by Unity.
 
-    Parameters
-    ----------
-    resolution : float
-        Metres per cell (e.g. 0.1 → 10 cm/cell).
-    width_m, height_m : float
-        Physical extent of the map in metres.  The origin (0, 0) in world space
-        maps to the centre of the grid.
-    max_depth : float
-        Depth readings beyond this value are discarded (likely sky / far wall).
-    col_step, row_step : int
-        Sub-sample the depth image every N columns / rows for speed.
-    floor_band : float
-        Only depth points whose world-Y is within ±floor_band of the camera
-        height are used.  This strips out ceiling and floor hits.
-    obstacle_height_min : float
-        World-Y lower bound (relative to cam_pos_y) for a point to count as an
-        obstacle.  Points below this are floor; points above are ceiling.
-    obstacle_height_max : float
-        World-Y upper bound (relative to cam_pos_y) for obstacle classification.
-    free_ray_samples : int
-        How many evenly-spaced cells to mark FREE along each depth ray
-        (between camera and the hit point).
-    hit_threshold : int
-        How many times a cell must be hit before it is marked OCCUPIED.
-        Set to 1 for aggressive mapping, higher for noise robustness.
-    morph_free_radius : int
-        Morphological closing radius (cells) applied to the FREE layer each
-        render to fill small holes and connect nearby free regions.
-        Set to 0 to disable.
-    morph_occ_radius : int
-        Morphological closing radius (cells) applied to the OCCUPIED layer.
-        Bridges small gaps in walls so frontiers don't leak through them.
-        Set to 0 to disable.
-    frontier_min_size : int
-        Frontier clusters with fewer than this many cells are discarded as
-        noise.
-    frontier_merge_radius : float
-        After clustering, frontier centroids closer than this distance (metres)
-        are merged into a single point.  Reduces redundant navigation goals.
+    resolution/width_m/height_m define the grid; origin (0,0) in world
+    space maps to the grid centre. max_depth discards far-away readings.
+    col_step/row_step subsample the depth image for speed. floor_band keeps
+    only points near camera height; obstacle_height_min/max classify the
+    rest as floor vs ceiling vs obstacle. free_ray_samples controls how many
+    cells along each ray get marked FREE. hit_threshold is how many hits
+    before a cell becomes OCCUPIED. morph_free_radius/morph_occ_radius are
+    morphological closing radii for smoothing each layer (0 disables).
+    frontier_min_size discards small frontier clusters; frontier_merge_radius
+    merges nearby frontier centroids.
     """
 
     def __init__(
@@ -144,21 +100,14 @@ class OccupancyMap:
         return k
 
     def _smoothed_layers(self):
-        """
-        Return morphologically-closed FREE and OCCUPIED masks.
-
-        Closing = dilation then erosion: fills small holes / gaps inside a
-        region without expanding its outer boundary much.  We never let
-        smoothed-OCCUPIED overwrite cells the raw grid marks as FREE, and
-        vice versa, so the operation is conservative.
-        """
+        """Morphologically-closed FREE and OCCUPIED masks (fills small gaps,
+        without letting either layer overwrite the other's raw cells)."""
         free_raw = (self.grid == FREE).astype(np.uint8)
         occ_raw  = (self.grid == OCCUPIED).astype(np.uint8)
 
         if self.morph_free_radius > 0:
             k        = self._make_disk(self.morph_free_radius)
             free_smooth = cv2.morphologyEx(free_raw, cv2.MORPH_CLOSE, k)
-            # Don't let smoothed FREE bleed into raw OCCUPIED cells
             free_smooth[occ_raw == 1] = 0
         else:
             free_smooth = free_raw
@@ -166,7 +115,6 @@ class OccupancyMap:
         if self.morph_occ_radius > 0:
             k       = self._make_disk(self.morph_occ_radius)
             occ_smooth = cv2.morphologyEx(occ_raw, cv2.MORPH_CLOSE, k)
-            # Don't let smoothed OCCUPIED overwrite raw FREE cells
             occ_smooth[free_raw == 1] = 0
         else:
             occ_smooth = occ_raw
@@ -176,14 +124,8 @@ class OccupancyMap:
     # ── Main update ───────────────────────────────────────────────────────────
 
     def clear_near_agent(self, agent_pos, radius_m=1.2):
-        """
-        Explicitly mark cells within `radius_m` of the agent as FREE
-        (unless they are OCCUPIED by an obstacle).
-
-        This prevents stale frontier cells from persisting after the agent
-        has physically passed through them — morphological smoothing can
-        otherwise keep UNKNOWN islands alive near the agent path.
-        """
+        """Mark cells within radius_m of the agent as FREE (unless OCCUPIED),
+        so stale UNKNOWN cells don't linger on the agent's path."""
         cell = self.world_to_cell(agent_pos[0], agent_pos[2])
         if cell is None:
             return
@@ -291,18 +233,10 @@ class OccupancyMap:
         return (free_mask & dilated).astype(np.uint8)
 
     def _safe_clearance_mask(self, extra_cells=2):
-        """
-        Returns a boolean mask that is True for cells that are:
-          - FREE (raw grid), AND
-          - not within (inflation_radius + extra_cells) of any OCCUPIED cell.
-
-        Used to validate / pull frontier centroids away from walls.
-        `extra_cells` adds a small extra buffer on top of the planner's
-        inflation radius so centroids have guaranteed manoeuvring room.
-        """
+        """True for FREE cells that are also clear of any OCCUPIED cell by
+        more than morph_occ_radius + extra_cells. Used to keep frontier
+        centroids away from walls."""
         occ  = (self.grid == OCCUPIED).astype(np.uint8)
-        # Use morph_occ_radius as a proxy for the planner's inflation radius,
-        # plus the requested extra buffer.
         r    = self.morph_occ_radius + extra_cells
         k    = self._make_disk(r)
         inflated = cv2.dilate(occ, k, iterations=1).astype(bool)
@@ -310,11 +244,8 @@ class OccupancyMap:
         return free_raw & ~inflated   # True = safely traversable
 
     def _pull_to_safe(self, col, row, safe_mask, max_search=40):
-        """
-        If (col, row) is not in safe_mask, BFS outward until a safe cell
-        is found.  Returns (col, row) unchanged if it is already safe,
-        or the nearest safe cell, or None if nothing found within max_search.
-        """
+        """BFS outward from (col, row) to the nearest safe cell. Returns the
+        original cell if already safe, or None if nothing found in range."""
         if safe_mask[row, col]:
             return col, row
         from collections import deque
@@ -338,39 +269,21 @@ class OccupancyMap:
 
     def get_frontiers(self):
         """
-        Return a list of (world_x, world_z) cluster centroids, guaranteed
-        to lie in safely traversable space (away from walls).
-
-        Pipeline
-        --------
-        1. Morphologically smooth FREE / OCCUPIED layers.
-        2. Build a safe-clearance mask (FREE and not near any wall).
-        3. Compute per-cell frontier mask on the smoothed layers, then
-           REMOVE any frontier cell that falls outside the safe mask —
-           this strips frontier pixels that are inside walls or right
-           against them before clustering.
-        4. Find connected components; discard small ones.
-        5. Compute centroid of each cluster; if centroid lands in unsafe
-           space, pull it to the nearest safe cell via BFS.
-        6. Discard any centroid that could not be pulled to a safe cell.
-        7. Merge remaining centroids within frontier_merge_radius.
+        Return (world_x, world_z) cluster centroids, pulled into safely
+        traversable space away from walls.
         """
         free_smooth, occ_smooth = self._smoothed_layers()
         unknown_smooth = ((free_smooth == 0) & (occ_smooth == 0)).astype(np.uint8)
 
         frontier_mask = self._raw_frontier_mask(free_smooth, unknown_smooth)
 
-        # ── Strip frontier cells that are inside / too close to walls ────────
+        # Drop frontier cells inside/against walls. Dilate the safe mask by
+        # 1 first so thin corridors aren't discarded by a strict AND.
         safe_mask = self._safe_clearance_mask(extra_cells=2)
-        # A frontier cell is only kept if it (or its immediate 1-cell
-        # neighbourhood) has at least one safe cell — i.e. it is reachable
-        # from safe space.  A strict AND would discard valid thin corridors,
-        # so we dilate the safe mask by 1 before masking.
         safe_dilated = cv2.dilate(safe_mask.astype(np.uint8),
                                   np.ones((3, 3), np.uint8), iterations=1)
         frontier_mask = (frontier_mask.astype(bool) & safe_dilated.astype(bool)).astype(np.uint8)
 
-        # ── Connected-component clustering ───────────────────────────────────
         n_labels, label_img = cv2.connectedComponents(frontier_mask, connectivity=8)
 
         centroids = []
@@ -382,8 +295,7 @@ class OccupancyMap:
 
             rows, cols = np.where(component)
 
-            # Use the component cell closest to its geometric mean as the
-            # centroid seed — more stable than the raw float mean.
+            # Cell closest to the geometric mean, more stable than the raw mean
             mean_col = float(cols.mean())
             mean_row = float(rows.mean())
             dists    = (cols - mean_col)**2 + (rows - mean_row)**2
@@ -391,10 +303,9 @@ class OccupancyMap:
             seed_col = int(cols[best_idx])
             seed_row = int(rows[best_idx])
 
-            # Pull the seed to safe space if needed.
             result = self._pull_to_safe(seed_col, seed_row, safe_mask)
             if result is None:
-                continue   # no safe cell reachable — discard cluster
+                continue
 
             safe_col, safe_row = result
             wx, wz = self.cell_to_world(safe_col, safe_row)
@@ -407,13 +318,9 @@ class OccupancyMap:
         return merged
 
     def _merge_centroids(self, centroids):
-        """
-        Greedily merge centroids that are within ``frontier_merge_radius``
-        metres of each other.  Larger clusters absorb smaller ones.
-        Returns list of (world_x, world_z).
-        """
+        """Greedily merge centroids within frontier_merge_radius metres,
+        larger clusters absorbing smaller ones."""
         r = self.frontier_merge_radius
-        # Sort largest-first so big clusters act as seeds
         remaining = sorted(centroids, key=lambda c: -c[2])
         merged    = []
 
@@ -487,14 +394,8 @@ class OccupancyMap:
         cv2.setMouseCallback(window_name, _mouse)
 
     def _build_base_layer(self):
-        """
-        Render the full grid at 1 px/cell.
-
-        Uses smoothed FREE/OCCUPIED layers for display so the rendered map
-        matches the frontier computation (filled holes, bridged wall gaps).
-        Raw frontier cells are shown as cyan; cluster centroids as large
-        magenta circles.
-        """
+        """Render the full grid at 1 px/cell, using smoothed FREE/OCCUPIED
+        layers so the display matches the frontier computation."""
         base = np.full((self.grid_h, self.grid_w, 3), 60, dtype=np.uint8)
 
         free_smooth, occ_smooth = self._smoothed_layers()
@@ -640,16 +541,7 @@ class OccupancyMap:
             x += 75
 
     def render(self, agent_pos=None, window_name="Occupancy Map", scale=None):
-        """
-        Rich interactive visualiser.
-
-        Controls:
-            Scroll  – zoom in / out
-            Drag    – pan
-            H       – toggle hit-count heatmap
-            R       – reset view
-            S       – save PNG
-        """
+        """Interactive visualiser. Scroll=zoom, drag=pan, H=heatmap, R=reset, S=save."""
         self._vis_init(window_name)
 
         key = cv2.waitKey(1) & 0xFF

@@ -22,18 +22,11 @@ POS_ALPHA_BASE         = 0.25
 POS_ALPHA_MAX          = 0.45
 
 # ── Spatial scene consensus ──────────────────────────────────────────────────
-# Landmarks within this distance of each other are treated as "same room"
-# when pooling scene_label_votes for consensus. Too small and a large real
-# room won't form one cluster; too large and two adjacent different rooms
-# merge into one. Tune against your actual level's room sizes.
+# Landmarks within this distance are pooled as "same room" for scene voting.
 CLUSTER_RADIUS_M       = 5.0
 
-# Room types that physically exist only once in this level. If more than
-# one spatial cluster claims one of these after consensus voting, only the
-# cluster with the larger total vote mass keeps it -- the rest fall back to
-# their next-best label. Don't include types that legitimately recur
-# (patient room, corridor, bathroom, examination, patient rooms hallway,
-# etc.) -- adjust this set to match your actual hospital layout.
+# Scene types that only exist once in this level -- if two clusters both
+# claim one, only the cluster with more votes keeps it.
 SINGLE_INSTANCE_SCENES = {
     "Administration", "conference room", "emergency", "imaging", "lab",
     "lobby", "main entrance", "OR_area", "OR_sterilization", "pharamacy",
@@ -41,22 +34,15 @@ SINGLE_INSTANCE_SCENES = {
     "administration lounge", "cafeteria",
 }
 
-# Minimum scene_score (from CLIP full-frame classifier) for a scene vote to
-# carry any weight.  Observations below this are discarded rather than adding
-# noise to the majority vote.
+# Scene votes below this confidence are discarded instead of counted.
 SCENE_MIN_CONFIDENCE   = 0.25
 
-# How much weight a scene vote gets = scene_score ** SCENE_VOTE_POWER.
-# Power > 1 suppresses low-confidence votes more aggressively.
+# Vote weight = scene_score ** SCENE_VOTE_POWER (power > 1 punishes low confidence more).
 SCENE_VOTE_POWER       = 2.0
 
-# Object label → plausible scene labels.
-# When the object-level CLIP label strongly implies a room type, that signal
-# is added as a synthetic scene vote weighted by OBJECT_SCENE_PRIOR_WEIGHT.
-# This cross-checks the full-frame scene classifier against what was actually
-# detected in the salient crop — catches cases where the frame looks like a
-# corridor but the salient crop is clearly a surgical table.
-OBJECT_SCENE_PRIOR_WEIGHT = 1.5   # synthetic vote weight relative to one obs
+# Object label -> scene labels it implies (e.g. an OR table means OR_area
+# even if the full-frame scene classifier says corridor).
+OBJECT_SCENE_PRIOR_WEIGHT = 1.5
 
 OBJECT_TO_SCENE_PRIOR = {
     # Surgical / OR
@@ -119,15 +105,12 @@ OBJECT_TO_SCENE_PRIOR = {
 
 
 def _initial_scene_votes(scene_label, scene_score, clip_label, clip_score):
-    """
-    Build the initial scene_label_votes dict for a newly created landmark node,
-    using the same confidence-weighted + object-prior logic as _fuse_observation.
-    """
+    """Build the initial scene_label_votes dict for a new landmark node."""
     votes = {}
     if scene_label and scene_score is not None and scene_score >= SCENE_MIN_CONFIDENCE:
         votes[scene_label] = float(scene_score) ** SCENE_VOTE_POWER
     elif scene_label:
-        votes[scene_label] = 0.0  # record the label but give it zero weight
+        votes[scene_label] = 0.0
 
     if clip_label and clip_label in OBJECT_TO_SCENE_PRIOR:
         implied   = OBJECT_TO_SCENE_PRIOR[clip_label]
@@ -141,9 +124,9 @@ def _initial_scene_votes(scene_label, scene_score, clip_label, clip_score):
 
 class SemanticMapper:
     """
-    Maintains a spatial-semantic graph of observed landmarks.
-    Each node stores both an object-level CLIP label (from the salient crop)
-    and a scene-level label (from the full-frame fine-tuned classifier).
+    Spatial-semantic graph of observed landmarks. Each node stores an
+    object-level CLIP label (salient crop) and a scene-level label
+    (full-frame classifier).
     """
 
     def __init__(
@@ -303,38 +286,18 @@ class SemanticMapper:
             votes[clip_label]  = votes.get(clip_label, 0) + vote_weight
             node['clip_label'] = max(votes, key=votes.get)
 
-        # D. Scene label voting — confidence-weighted + object-prior fusion
-        #
-        # Three signals are combined into scene_label_votes (float weights):
-        #
-        #   D1. Full-frame CLIP scene score (confidence-weighted, power-scaled).
-        #       Low-confidence frames (below SCENE_MIN_CONFIDENCE) are discarded
-        #       entirely rather than adding noise.
-        #
-        #   D2. Object→scene prior: if the object-level CLIP label strongly
-        #       implies a room type (e.g. "surgical operating table" → OR_area),
-        #       inject synthetic votes for those scene labels.  This cross-checks
-        #       the full-frame classifier against what was actually in the crop —
-        #       critical for transitional views (doorways, corridor boundaries)
-        #       where the full frame looks ambiguous but the salient object is
-        #       unambiguous.
-        #
-        #   D3. OCR boost: if OCR text was detected in this frame, slightly
-        #       upweight whichever scene label just won D1 (signage is reliable).
+        # D. Scene label voting: full-frame scene score, object->scene prior,
+        # and an OCR confidence boost, all pooled into scene_label_votes.
         scene_votes = node.setdefault('scene_label_votes', {})
 
         if scene_label and scene_score is not None and scene_score >= SCENE_MIN_CONFIDENCE:
-            # D1: confidence-weighted vote
             vote = (float(scene_score) ** SCENE_VOTE_POWER)
-            # D3: OCR boost — signage makes the scene classification more reliable
             if ocr_text and len(ocr_text.strip()) > 2:
                 vote *= 1.3
             scene_votes[scene_label] = scene_votes.get(scene_label, 0.0) + vote
 
-        # D2: object→scene prior
         if clip_label and clip_label in OBJECT_TO_SCENE_PRIOR:
             implied_scenes = OBJECT_TO_SCENE_PRIOR[clip_label]
-            # Weight by object confidence; split evenly across implied scenes
             obj_conf   = float(clip_score) if clip_score is not None else 0.5
             prior_vote = OBJECT_SCENE_PRIOR_WEIGHT * obj_conf / len(implied_scenes)
             for implied in implied_scenes:
@@ -475,36 +438,16 @@ class SemanticMapper:
     def consolidate_scene_labels(self, cluster_radius=CLUSTER_RADIUS_M,
                                   single_instance_scenes=SINGLE_INSTANCE_SCENES):
         """
-        Spatial fusion pass for scene labels.
+        Spatial consensus pass for scene labels, run in two steps:
 
-        _fuse_observation's D1/D2/D3 voting only reconciles repeat
-        observations of the SAME landmark over time. It has no way to notice
-        that one landmark's confidently-wrong label disagrees with every
-        landmark physically around it, or that some scene types should only
-        ever claim one physical location in the level. Left alone, that lets
-        a handful of confusing frames produce e.g. three different "imaging"
-        landmarks scattered across the map when there's only one real
-        imaging room.
+          1. Single-linkage cluster landmarks within `cluster_radius`, pool
+             each cluster's scene_label_votes, assign one winning label per
+             cluster. Outvotes a single mislabeled landmark among neighbours.
+          2. For labels in `single_instance_scenes`, if more than one
+             cluster still claims the same label, only the cluster with the
+             larger vote mass keeps it; the rest fall back to their next best.
 
-        Two passes, run in order:
-
-          1. SPATIAL CONSENSUS -- single-linkage cluster landmarks by
-             physical proximity (anything within `cluster_radius` of another
-             member joins the same cluster), pool every member's
-             scene_label_votes together, and assign ONE winning label to the
-             whole cluster. A single mislabeled landmark sitting among a
-             dozen correctly-labeled neighbours gets outvoted.
-
-          2. GLOBAL UNIQUENESS -- for labels in `single_instance_scenes`, if
-             more than one cluster still claims the same label after pass 1,
-             only the cluster with the larger total pooled vote mass keeps
-             it; the rest fall back to their cluster's next-best label.
-
-        Mutates `scene_label` on every node. Leaves `scene_label_votes`
-        untouched as the audit trail of how each landmark got there. Safe to
-        call any time -- e.g. periodically alongside `_merge_duplicates()`,
-        or once after loading a saved graph into read-only mode before
-        serving any llm.py-grounded navigation queries against it.
+        Mutates `scene_label` on every node; leaves `scene_label_votes` as-is.
         """
         ids = list(self.graph.nodes)
         if not ids:
@@ -670,32 +613,15 @@ class SemanticMapper:
     def add_landmark(self, pos, clip_embedding, ocr_text, timestamp, distance,
                      saliency_mean=None, clip_label=None, clip_score=None,
                      scene_label=None, scene_score=None):
-        """
-        Main entry point — called once per frame when a salient object is detected.
+        """Called once per frame when a salient object is detected."""
 
-        Parameters
-        ----------
-        pos           : array-like (3,)  — world position
-        clip_embedding: np.ndarray (512,) or None — object-crop CLIP embedding
-        ocr_text      : str or None
-        timestamp     : float
-        distance      : float — metric distance to object
-        saliency_mean : float or None
-        clip_label    : str or None — object-level class (from salient crop)
-        clip_score    : float or None — confidence of clip_label
-        scene_label   : str or None — room-level class (from full-frame classifier)
-        """
-
-        # 1. Normalise embedding
         if clip_embedding is not None:
             clip_embedding = np.array(clip_embedding, dtype=np.float32).flatten()
             norm           = np.linalg.norm(clip_embedding)
             clip_embedding = clip_embedding / norm if norm > 1e-6 else None
 
-        # 2. Find best existing match
         best_match = self._find_best_match(pos, clip_embedding, clip_label, clip_score)
 
-        # 3. Fuse or create
         if best_match is not None:
             self._fuse_observation(
                 best_match, pos, clip_embedding, clip_label,
@@ -719,7 +645,6 @@ class SemanticMapper:
                 'label_votes'       : {clip_label: 1} if clip_label else {},
                 'scene_label'       : scene_label,
                 'scene_label_votes' : (
-                    # Seed with confidence-weighted initial vote + object prior
                     _initial_scene_votes(scene_label, scene_score, clip_label, clip_score)
                     if scene_label else {}
                 ),
@@ -731,7 +656,6 @@ class SemanticMapper:
                 f"| obj={clip_label} | scene={scene_label}"
             )
 
-        # 4. Temporal edge
         if self.last_landmark_id and self.last_landmark_id != landmark_id:
             if not self.graph.has_edge(self.last_landmark_id, landmark_id):
                 self.graph.add_edge(
@@ -741,7 +665,6 @@ class SemanticMapper:
         self.last_landmark_id  = landmark_id
         self._obs_since_merge += 1
 
-        # 5. Periodic duplicate merging + scene consensus (every 30 observations)
         if self._obs_since_merge >= 30:
             self._merge_duplicates()
             self.consolidate_scene_labels()
@@ -749,4 +672,3 @@ class SemanticMapper:
 
         self._rebuild_kdtree()
         return landmark_id
-

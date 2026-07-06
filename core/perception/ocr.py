@@ -1,6 +1,4 @@
 import easyocr
-import numpy as np
-import cv2
 
 _reader = None
 
@@ -18,10 +16,8 @@ def run_ocr(image_np, bbox=None, confidence_threshold=0.5):
     if _reader is None:
         init_ocr()
 
-    # Crop if bbox given
     if bbox is not None:
         x, y, w, h = bbox
-        # Ensure coordinates are within image bounds
         x = max(0, x)
         y = max(0, y)
         w = min(w, image_np.shape[1] - x)
@@ -33,12 +29,10 @@ def run_ocr(image_np, bbox=None, confidence_threshold=0.5):
     else:
         crop = image_np
 
-    # EasyOCR expects BGR? Actually it works with RGB as well, but we convert to RGB just in case.
-    # crop is already RGB (from PIL), so fine.
+    # crop is already RGB (from PIL) — EasyOCR handles that fine
     try:
         results = _reader.readtext(crop, paragraph=False)
         texts = [text for (_, text, conf) in results if conf > confidence_threshold]
-        # Join all detected text blocks (space separated)
         return " ".join(texts).strip()
     except Exception as e:
         print(f"EasyOCR error: {e}")

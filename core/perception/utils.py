@@ -3,9 +3,7 @@ import cv2
 from PIL import Image
 import io
 
-# ----------------------------------------------------------------------
 # Drawing utilities
-# ----------------------------------------------------------------------
 def draw_depth_map(depth_map, title="Depth Map"):
     depth_norm = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX, dtype=cv2.CV_8U)
     depth_colored = cv2.applyColorMap(depth_norm, cv2.COLORMAP_JET)
@@ -56,9 +54,7 @@ def draw_rgb_with_bbox(rgb_np, bbox, center, pos_3d, title="RGB",
         img = cv2.resize(img, None, fx=scale, fy=scale)
     cv2.imshow(title, img)
 
-# ----------------------------------------------------------------------
 # Core 3D projection
-# ----------------------------------------------------------------------
 def get_object_3d_position(rgb_image, saliency_map, depth_map, depth_w, depth_h, fov):
     h_img, w_img = rgb_image.shape[:2]
 
